@@ -361,20 +361,43 @@ def main():
         except Exception as e:
             log.error("Analytics error: %s", e)
 
-        # 4. Fetch Linky energy data (once per day, after 7 AM)
+        # 4. Fetch Linky energy data
+        #    - One-time backfill: 2 years of history on first run
+        #    - Daily: retry hourly from 10 AM CET until data received
+        #    - Enedis publishes yesterday's data around 6-10 AM
         if cfg.get("linky_enabled", False):
             try:
                 last_fetch = state.get("last_linky_fetch", "")
                 today_str = str(date.today())
-                now_hour = datetime.now().hour
+                now_hour = datetime.now().hour  # Local time (CET/CEST)
+                last_attempt_hour = state.get("last_linky_attempt_hour", -1)
 
-                if last_fetch != today_str and now_hour >= 7:
+                # Only attempt after 10 AM, and at most once per hour
+                should_try = (last_fetch != today_str
+                              and now_hour >= 10
+                              and now_hour != last_attempt_hour)
+
+                if should_try:
                     from airzone_linky import (
                         fetch_load_curve, run_energy_analysis,
+                        backfill_load_curve,
                     )
                     token = cfg["linky_token"]
                     prm = cfg["linky_prm"]
                     if token and prm:
+                        state["last_linky_attempt_hour"] = now_hour
+
+                        # One-time backfill: fetch 2 years of history
+                        if not state.get("linky_backfill_done"):
+                            log.info("Linky: starting 2-year backfill...")
+                            bf = backfill_load_curve(
+                                token, prm, db.conn, days=730)
+                            log.info("Linky backfill: %d fetched, %d inserted",
+                                     bf["total_fetched"],
+                                     bf["total_inserted"])
+                            state["linky_backfill_done"] = True
+
+                        # Daily fetch: yesterday's load curve
                         yesterday = date.today() - timedelta(days=1)
                         readings = fetch_load_curve(
                             token, prm, yesterday,
@@ -383,12 +406,17 @@ def main():
                             db.log_linky_readings(readings)
                             log.info("Linky: stored %d readings for %s",
                                      len(readings), yesterday)
+                            # Success — mark today as fetched, stop retrying
+                            state["last_linky_fetch"] = today_str
+                            state["last_linky_attempt_hour"] = -1
                             # Run energy analysis
                             summary = run_energy_analysis(db.conn, days=30)
                             if summary.get("savings"):
                                 s = summary["savings"]
                                 log.info("Linky: %s", s["reasoning"])
-                        state["last_linky_fetch"] = today_str
+                        else:
+                            log.info("Linky: no data yet for %s, "
+                                     "will retry next hour", yesterday)
                         _ctrl.save_state(state)
                     else:
                         log.warning("Linky enabled but token/prm not set")

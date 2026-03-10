@@ -525,6 +525,94 @@ def compute_savings(conn: sqlite3.Connection, days: int = 30) -> dict | None:
     }
 
 
+# ── Historical Backfill ──────────────────────────────────────────────────────
+
+def backfill_load_curve(token: str, prm: str, conn: sqlite3.Connection,
+                        days: int = 730) -> dict:
+    """
+    Backfill up to `days` of historical load curve data from the Conso API.
+
+    Fetches in 7-day chunks (API max), skips weeks already fully in the DB,
+    and inserts new readings with deduplication (UNIQUE on timestamp).
+
+    Args:
+        token: Conso API bearer token
+        prm: 14-digit Linky meter ID
+        conn: SQLite connection with linky_readings table
+        days: How far back to fetch (default 730 = 2 years)
+
+    Returns dict with: total_fetched, total_inserted, weeks_fetched,
+                       weeks_skipped, oldest_date, newest_date
+    """
+    import time as _time
+
+    create_linky_tables(conn)
+
+    end = date.today()
+    start = end - timedelta(days=days)
+    current = start
+
+    total_fetched = 0
+    total_inserted = 0
+    weeks_fetched = 0
+    weeks_skipped = 0
+    oldest = None
+    newest = None
+
+    log.info("Linky backfill: fetching %d days (%s to %s)", days, start, end)
+
+    while current < end:
+        chunk_end = min(current + timedelta(days=7), end)
+
+        # Check if this week is already fully populated
+        # (48 slots/day × 7 days = 336 readings for a full week)
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM linky_readings "
+            "WHERE timestamp >= ? AND timestamp < ?",
+            (str(current), str(chunk_end))
+        ).fetchone()[0]
+
+        expected = (chunk_end - current).days * 48
+        if existing >= expected * 0.9:  # 90% full = skip
+            weeks_skipped += 1
+            current = chunk_end
+            continue
+
+        # Fetch from API
+        readings = fetch_load_curve(token, prm, current, chunk_end)
+        if readings:
+            total_fetched += len(readings)
+            inserted = store_load_curve(conn, readings)
+            total_inserted += inserted
+            weeks_fetched += 1
+
+            if not oldest:
+                oldest = str(current)
+            newest = str(chunk_end)
+
+            log.info("Linky backfill: week %s→%s: %d readings (%d new)",
+                     current, chunk_end, len(readings),
+                     inserted if isinstance(inserted, int) else len(readings))
+        else:
+            log.warning("Linky backfill: no data for %s→%s", current, chunk_end)
+
+        current = chunk_end
+        _time.sleep(0.5)  # Rate limit courtesy
+
+    result = {
+        "total_fetched": total_fetched,
+        "total_inserted": total_inserted,
+        "weeks_fetched": weeks_fetched,
+        "weeks_skipped": weeks_skipped,
+        "oldest_date": oldest,
+        "newest_date": newest,
+    }
+    log.info("Linky backfill complete: %d fetched, %d inserted, "
+             "%d weeks fetched, %d skipped",
+             total_fetched, total_inserted, weeks_fetched, weeks_skipped)
+    return result
+
+
 # ── File Import (Enedis Excel/CSV) ───────────────────────────────────────────
 
 def import_enedis_file(conn: sqlite3.Connection, filepath: str) -> dict:
