@@ -1,0 +1,328 @@
+/* Airzone Dashboard Styles */
+
+:root {
+    --bg: #f8fafc;
+    --card-bg: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --muted: #94a3b8;
+    --blue: #2563eb;
+    --red: #dc2626;
+    --green: #16a34a;
+    --orange: #f59e0b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 1.5rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--blue);
+}
+
+#last-updated {
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+/* Status cards */
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    text-align: center;
+}
+
+.card-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.4rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.card-temp {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--blue);
+}
+
+.card-hum {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0.3rem 0;
+}
+
+.hum-ok { color: var(--green); }
+.hum-warning { color: var(--orange); }
+.hum-critical { color: var(--red); }
+
+.card-power {
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
+}
+
+.power-on { background: #dcfce7; color: var(--green); }
+.power-off { background: #f1f5f9; color: var(--muted); }
+
+.card-outdoor {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+}
+
+/* Range bar */
+.range-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.range-bar span {
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.range-btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card-bg);
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+}
+
+.range-btn:hover { border-color: var(--blue); }
+
+.range-btn.active {
+    background: var(--blue);
+    color: white;
+    border-color: var(--blue);
+}
+
+#refresh-btn {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card-bg);
+    cursor: pointer;
+    font-size: 1.1rem;
+    margin-left: auto;
+}
+
+#refresh-btn:hover { border-color: var(--blue); }
+
+/* Charts */
+.chart-container {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    height: 350px;
+    position: relative;
+}
+
+.chart-container h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+}
+
+.chart-container canvas {
+    max-height: 280px;
+}
+
+/* Actions table */
+.actions-section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.actions-section h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+#actions-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+#actions-table th {
+    text-align: left;
+    padding: 0.5rem;
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+}
+
+#actions-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.action-on { color: var(--red); font-weight: 600; }
+.action-off { color: var(--green); font-weight: 600; }
+.action-deferred { color: var(--orange); font-weight: 600; }
+
+/* Footer */
+footer {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--muted);
+    padding: 1rem 0;
+}
+
+.muted { color: var(--muted); font-size: 0.9rem; }
+
+/* Analytics */
+.analytics-section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.analytics-section h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+.analytics-section table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.analytics-section th {
+    text-align: left;
+    padding: 0.5rem;
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+}
+
+.analytics-section td {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.status-good { color: var(--green); font-weight: 600; }
+.status-moderate { color: var(--orange); font-weight: 600; }
+.status-slow { color: var(--red); font-weight: 600; }
+
+/* Warm hours recommendation */
+.warm-hours-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.warm-metric {
+    text-align: center;
+    padding: 0.5rem;
+    background: var(--bg);
+    border-radius: 8px;
+}
+
+.warm-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.warm-value {
+    display: block;
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.warm-changed {
+    color: var(--blue);
+}
+
+.warm-reasoning {
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* Dew point */
+.card-dewpoint {
+    font-size: 0.75rem;
+    color: #06b6d4;
+    margin-top: 0.15rem;
+}
+
+/* Runoff / Early-off */
+.runoff-value { color: #06b6d4; }
+.earlyoff-active { color: var(--green); font-weight: 600; }
+.earlyoff-learning { color: var(--orange); font-style: italic; }
+
+/* Energy */
+.energy-hp { color: #8b5cf6; }
+
+.eff-good { color: var(--green); font-weight: 600; }
+.eff-moderate { color: var(--orange); font-weight: 600; }
+.eff-poor { color: var(--red); font-weight: 600; }
+
+/* Responsive */
+@media (max-width: 640px) {
+    body { padding: 1rem; }
+    .cards { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+    .chart-container { height: 300px; padding: 0.75rem; }
+    .chart-container canvas { max-height: 230px; }
+    #actions-table { font-size: 0.75rem; }
+}

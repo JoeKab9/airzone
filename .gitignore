@@ -1,0 +1,21 @@
+# Runtime data (credentials, caches, DB)
+data/
+
+# Build artifacts
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec
+*.log
+
+# macOS
+.DS_Store
+
+# Environment / credentials
+.env
+*.env
+
+# Config with tokens
+airzone_config.json
+pi/airzone_pi_config.json

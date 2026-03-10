@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:conso.boris.sh)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://api.github.com/repos/bokub/linky/contents/src\")",
+      "Bash(python3 -c \"import json,sys; files=json.load\\(sys.stdin\\); [print\\(f[''name'']\\) for f in files]\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/bokub/conso-api/main/api/index.ts\")",
+      "Bash(curl -s \"https://api.github.com/repos/bokub/conso-api/contents/\")",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f[''name''],f[''type'']\\) for f in data]\")",
+      "Bash(curl -s \"https://api.github.com/repos/bokub/conso-api/contents/lib\")",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f[''name'']\\) for f in data]\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/bokub/conso-api/main/functions/api/%5Btype%5D.ts\")",
+      "Bash(curl -s \"https://api.github.com/repos/bokub/conso-api/contents/functions\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/bokub/conso-api/main/content/documentation.md\")",
+      "Bash(curl -s \"https://api.github.com/repos/bokub/conso-api/contents/content/documentation.md\")",
+      "Bash(python3 -c \"import json,sys,base64; data=json.load\\(sys.stdin\\); print\\(base64.b64decode\\(data[''content'']\\).decode\\(\\)\\)\")",
+      "Bash(python3 best_price.py --help)",
+      "Bash(python3 -c \":*)"
+    ]
+  }
+}

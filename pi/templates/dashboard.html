@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airzone Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+</head>
+<body>
+    <header>
+        <h1>Airzone Dashboard</h1>
+        <span id="last-updated">Loading...</span>
+    </header>
+
+    <!-- Status cards -->
+    <section id="status-cards" class="cards"></section>
+
+    <!-- Time range selector -->
+    <section class="range-bar">
+        <span>Time range:</span>
+        <button class="range-btn active" data-hours="24">24h</button>
+        <button class="range-btn" data-hours="72">3 days</button>
+        <button class="range-btn" data-hours="168">7 days</button>
+        <button class="range-btn" data-hours="720">30 days</button>
+        <button id="refresh-btn" title="Refresh now">&#x21bb;</button>
+    </section>
+
+    <!-- Charts -->
+    <section class="chart-container">
+        <h2>Temperature</h2>
+        <canvas id="tempChart"></canvas>
+    </section>
+
+    <section class="chart-container">
+        <h2>Humidity</h2>
+        <canvas id="humChart"></canvas>
+    </section>
+
+    <!-- Outdoor temperature -->
+    <section class="chart-container">
+        <h2>Outdoor Temperature</h2>
+        <canvas id="outdoorChart"></canvas>
+    </section>
+
+    <!-- Energy Consumption -->
+    <section class="chart-container" id="energy-chart-section" style="display:none">
+        <h2>Energy Consumption (Linky)</h2>
+        <canvas id="energyChart"></canvas>
+    </section>
+
+    <!-- Control actions log -->
+    <section class="actions-section">
+        <h2>Control Actions</h2>
+        <table id="actions-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Zone</th>
+                    <th>Action</th>
+                    <th>Humidity</th>
+                    <th>Reason</th>
+                </tr>
+            </thead>
+            <tbody id="actions-body"></tbody>
+        </table>
+        <p id="no-actions" class="muted" style="display:none">No control actions in this period.</p>
+    </section>
+
+    <!-- Analytics: Zone Profiles -->
+    <section class="analytics-section">
+        <h2>Zone Analytics</h2>
+        <div id="analytics-loading" class="muted">Analyzing heating cycles...</div>
+        <table id="profiles-table" style="display:none">
+            <thead>
+                <tr>
+                    <th>Zone</th>
+                    <th>Drying Rate</th>
+                    <th>Recovery Time</th>
+                    <th>Rebound Rate</th>
+                    <th>Runoff</th>
+                    <th>Early-Off</th>
+                    <th>Cycles (30d)</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="profiles-body"></tbody>
+        </table>
+        <p id="no-profiles" class="muted" style="display:none">Not enough data yet. Heating cycles will appear after zones have been activated.</p>
+    </section>
+
+    <!-- Analytics: Warm Hours Recommendation -->
+    <section class="analytics-section" id="warm-hours-section" style="display:none">
+        <h2>Warm Window Recommendation</h2>
+        <div id="warm-hours-info"></div>
+    </section>
+
+    <!-- Analytics: Heating Cycles -->
+    <section class="analytics-section">
+        <h2>Heating Cycles</h2>
+        <table id="cycles-table" style="display:none">
+            <thead>
+                <tr>
+                    <th>Zone</th>
+                    <th>Start</th>
+                    <th>Duration</th>
+                    <th>Humidity</th>
+                    <th>Drying Rate</th>
+                    <th>Rebound</th>
+                    <th>Runoff</th>
+                </tr>
+            </thead>
+            <tbody id="cycles-body"></tbody>
+        </table>
+        <p id="no-cycles" class="muted" style="display:none">No heating cycles detected yet.</p>
+    </section>
+
+    <!-- Energy Analytics -->
+    <section class="analytics-section" id="energy-analytics-section" style="display:none">
+        <h2>Energy Analysis</h2>
+        <div id="energy-summary" class="warm-hours-grid"></div>
+        <div id="savings-info" style="display:none"></div>
+    </section>
+
+    <!-- Temperature Band Efficiency -->
+    <section class="analytics-section" id="temp-band-section" style="display:none">
+        <h2>Heat Pump Efficiency by Outdoor Temperature</h2>
+        <table id="temp-band-table">
+            <thead>
+                <tr>
+                    <th>Outdoor Temp</th>
+                    <th>kWh / heating hour</th>
+                    <th>Total heating hours</th>
+                    <th>Days sampled</th>
+                </tr>
+            </thead>
+            <tbody id="temp-band-body"></tbody>
+        </table>
+    </section>
+
+    <!-- DB stats -->
+    <footer id="stats"></footer>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let currentHours = 24;
+let tempChart = null;
+let humChart = null;
+let outdoorChart = null;
+let energyChart = null;
+
+const ZONE_COLORS = [
+    '#2563eb', '#dc2626', '#16a34a', '#f59e0b',
+    '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16',
+];
+
+// ── API helpers ─────────────────────────────────────────────────────────────
+async function fetchJSON(url) {
+    const resp = await fetch(url);
+    return resp.json();
+}
+
+// ── Status cards ────────────────────────────────────────────────────────────
+async function loadLatest() {
+    const latest = await fetchJSON('/api/latest');
+    const container = document.getElementById('status-cards');
+    container.innerHTML = '';
+
+    if (!latest.length) {
+        container.innerHTML = '<div class="card muted">No data yet. Waiting for first poll...</div>';
+        return;
+    }
+
+    latest.forEach(z => {
+        const card = document.createElement('div');
+        card.className = 'card';
+
+        const hum = z.humidity;
+        let humClass = 'hum-ok';
+        if (hum >= 70) humClass = 'hum-critical';
+        else if (hum >= 65) humClass = 'hum-warning';
+
+        const powerStr = z.power ? 'ON' : 'OFF';
+        const powerClass = z.power ? 'power-on' : 'power-off';
+
+        // Short zone name (remove installation prefix for display)
+        const shortName = z.zone_name.includes('/') ?
+            z.zone_name.split('/').pop() : z.zone_name;
+
+        const dewPointStr = z.outdoor_dew_point !== null && z.outdoor_dew_point !== undefined
+            ? '<div class="card-dewpoint">Dew point: ' + z.outdoor_dew_point.toFixed(1) + '°C</div>' : '';
+
+        card.innerHTML = `
+            <div class="card-name">${shortName}</div>
+            <div class="card-temp">${z.temperature !== null ? z.temperature.toFixed(1) + '°C' : '—'}</div>
+            <div class="card-hum ${humClass}">${hum !== null ? hum + '%' : '—'}</div>
+            <div class="card-power ${powerClass}">${powerStr}</div>
+            ${z.outdoor_temp !== null ? '<div class="card-outdoor">Outside: ' + z.outdoor_temp.toFixed(1) + '°C</div>' : ''}
+            ${dewPointStr}
+        `;
+        container.appendChild(card);
+    });
+
+    document.getElementById('last-updated').textContent =
+        'Last reading: ' + formatTime(latest[0].timestamp);
+}
+
+// ── Charts ──────────────────────────────────────────────────────────────────
+async function loadCharts() {
+    const readings = await fetchJSON(`/api/readings?hours=${currentHours}`);
+
+    // Group by zone
+    const byZone = {};
+    readings.forEach(r => {
+        if (!byZone[r.zone_name]) byZone[r.zone_name] = [];
+        byZone[r.zone_name].push(r);
+    });
+
+    const zoneNames = Object.keys(byZone).sort();
+
+    // Temperature chart
+    const tempDatasets = zoneNames.map((name, i) => ({
+        label: name.includes('/') ? name.split('/').pop() : name,
+        data: byZone[name].map(r => ({
+            x: r.timestamp,
+            y: r.temperature,
+        })),
+        borderColor: ZONE_COLORS[i % ZONE_COLORS.length],
+        backgroundColor: ZONE_COLORS[i % ZONE_COLORS.length] + '20',
+        tension: 0.3,
+        pointRadius: currentHours <= 72 ? 3 : 0,
+        borderWidth: 2,
+    }));
+
+    // Humidity chart
+    const humDatasets = zoneNames.map((name, i) => ({
+        label: name.includes('/') ? name.split('/').pop() : name,
+        data: byZone[name].map(r => ({
+            x: r.timestamp,
+            y: r.humidity,
+        })),
+        borderColor: ZONE_COLORS[i % ZONE_COLORS.length],
+        backgroundColor: ZONE_COLORS[i % ZONE_COLORS.length] + '20',
+        tension: 0.3,
+        pointRadius: currentHours <= 72 ? 3 : 0,
+        borderWidth: 2,
+    }));
+
+    // Outdoor temperature (single series, from first zone that has it)
+    const outdoorData = [];
+    const dewPointData = [];
+    const seen = new Set();
+    readings.forEach(r => {
+        if (r.outdoor_temp !== null && !seen.has(r.timestamp)) {
+            outdoorData.push({ x: r.timestamp, y: r.outdoor_temp });
+            if (r.outdoor_dew_point !== null && r.outdoor_dew_point !== undefined) {
+                dewPointData.push({ x: r.timestamp, y: r.outdoor_dew_point });
+            }
+            seen.add(r.timestamp);
+        }
+    });
+
+    const timeUnit = currentHours <= 24 ? 'hour' :
+                     currentHours <= 168 ? 'day' : 'week';
+
+    const commonOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top' } },
+        scales: {
+            x: {
+                type: 'time',
+                time: { unit: timeUnit },
+                title: { display: false },
+            },
+        },
+    };
+
+    // Destroy old charts if they exist
+    if (tempChart) tempChart.destroy();
+    if (humChart) humChart.destroy();
+    if (outdoorChart) outdoorChart.destroy();
+
+    tempChart = new Chart(document.getElementById('tempChart'), {
+        type: 'line',
+        data: { datasets: tempDatasets },
+        options: {
+            ...commonOptions,
+            scales: {
+                ...commonOptions.scales,
+                y: { title: { display: true, text: 'Temperature (°C)' } },
+            },
+        },
+    });
+
+    humChart = new Chart(document.getElementById('humChart'), {
+        type: 'line',
+        data: { datasets: humDatasets },
+        options: {
+            ...commonOptions,
+            scales: {
+                ...commonOptions.scales,
+                y: {
+                    title: { display: true, text: 'Humidity (%)' },
+                    min: 0, max: 100,
+                },
+            },
+            plugins: {
+                ...commonOptions.plugins,
+                annotation: {
+                    annotations: {
+                        onLine: {
+                            type: 'line', yMin: 70, yMax: 70,
+                            borderColor: '#dc2626', borderWidth: 1,
+                            borderDash: [5, 5],
+                            label: { display: true, content: 'ON 70%', position: 'end' },
+                        },
+                        offLine: {
+                            type: 'line', yMin: 65, yMax: 65,
+                            borderColor: '#16a34a', borderWidth: 1,
+                            borderDash: [5, 5],
+                            label: { display: true, content: 'OFF 65%', position: 'end' },
+                        },
+                    },
+                },
+            },
+        },
+    });
+
+    const outdoorDatasets = [{
+        label: 'Outdoor',
+        data: outdoorData,
+        borderColor: '#f59e0b',
+        backgroundColor: '#f59e0b20',
+        tension: 0.3,
+        pointRadius: currentHours <= 72 ? 3 : 0,
+        borderWidth: 2,
+        fill: true,
+    }];
+    if (dewPointData.length > 0) {
+        outdoorDatasets.push({
+            label: 'Dew Point',
+            data: dewPointData,
+            borderColor: '#06b6d4',
+            backgroundColor: '#06b6d420',
+            tension: 0.3,
+            pointRadius: currentHours <= 72 ? 2 : 0,
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+        });
+    }
+
+    outdoorChart = new Chart(document.getElementById('outdoorChart'), {
+        type: 'line',
+        data: { datasets: outdoorDatasets },
+        options: {
+            ...commonOptions,
+            scales: {
+                ...commonOptions.scales,
+                y: { title: { display: true, text: 'Temperature (°C)' } },
+            },
+        },
+    });
+}
+
+// ── Actions table ───────────────────────────────────────────────────────────
+async function loadActions() {
+    const actions = await fetchJSON(`/api/actions?hours=${currentHours}`);
+    const tbody = document.getElementById('actions-body');
+    const noMsg = document.getElementById('no-actions');
+
+    tbody.innerHTML = '';
+    if (!actions.length) {
+        noMsg.style.display = '';
+        return;
+    }
+    noMsg.style.display = 'none';
+
+    actions.slice(0, 50).forEach(a => {
+        const tr = document.createElement('tr');
+        const shortZone = a.zone_name.includes('/') ?
+            a.zone_name.split('/').pop() : a.zone_name;
+
+        let actionClass = '';
+        if (a.action === 'heating_on' || a.action === 'emergency_on') actionClass = 'action-on';
+        else if (a.action === 'heating_off') actionClass = 'action-off';
+        else if (a.action === 'deferred') actionClass = 'action-deferred';
+
+        tr.innerHTML = `
+            <td>${formatTime(a.timestamp)}</td>
+            <td>${shortZone}</td>
+            <td class="${actionClass}">${a.action.replace('_', ' ')}</td>
+            <td>${a.humidity !== null ? a.humidity + '%' : '—'}</td>
+            <td>${a.reason || ''}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+// ── Stats ───────────────────────────────────────────────────────────────────
+async function loadStats() {
+    const stats = await fetchJSON('/api/stats');
+    document.getElementById('stats').textContent =
+        `Database: ${stats.total_readings} readings | ` +
+        `${stats.db_size_mb} MB | ` +
+        `Since: ${stats.first_reading || 'no data'}`;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function formatTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString();
+}
+
+// ── Event handlers ──────────────────────────────────────────────────────────
+document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelector('.range-btn.active').classList.remove('active');
+        btn.classList.add('active');
+        currentHours = parseInt(btn.dataset.hours);
+        loadAll();
+    });
+});
+
+document.getElementById('refresh-btn').addEventListener('click', loadAll);
+
+// ── Analytics ───────────────────────────────────────────────────────────────
+async function loadAnalytics() {
+    // Zone profiles + runoff data
+    try {
+        const [profiles, runoffData] = await Promise.all([
+            fetchJSON('/api/analytics/profiles'),
+            fetchJSON('/api/analytics/runoff').catch(() => ({})),
+        ]);
+        const tbody = document.getElementById('profiles-body');
+        const table = document.getElementById('profiles-table');
+        const noMsg = document.getElementById('no-profiles');
+        const loading = document.getElementById('analytics-loading');
+        loading.style.display = 'none';
+
+        tbody.innerHTML = '';
+        if (!profiles.length) {
+            table.style.display = 'none';
+            noMsg.style.display = '';
+        } else {
+            table.style.display = '';
+            noMsg.style.display = 'none';
+            profiles.forEach(p => {
+                const shortName = p.zone_name.includes('/') ?
+                    p.zone_name.split('/').pop() : p.zone_name;
+                let statusClass = '';
+                if (p.status.startsWith('Good')) statusClass = 'status-good';
+                else if (p.status.startsWith('Moderate')) statusClass = 'status-moderate';
+                else if (p.status.startsWith('Slow')) statusClass = 'status-slow';
+
+                // Runoff column
+                const runoffStr = p.avg_runoff_drop !== null && p.avg_runoff_drop !== undefined
+                    ? p.avg_runoff_drop + '%' : '\u2014';
+
+                // Early-off column: check runoff API data
+                const zoneRunoff = runoffData[p.zone_name];
+                let earlyOffStr, earlyOffClass;
+                if (zoneRunoff && zoneRunoff.adjustment > 0) {
+                    earlyOffStr = 'Active (' + zoneRunoff.adjustment + '%)';
+                    earlyOffClass = 'earlyoff-active';
+                } else if (zoneRunoff && zoneRunoff.data_points > 0) {
+                    earlyOffStr = 'Learning\u2026';
+                    earlyOffClass = 'earlyoff-learning';
+                } else {
+                    earlyOffStr = '\u2014';
+                    earlyOffClass = '';
+                }
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${shortName}</td>
+                    <td>${p.avg_drying_rate !== null ? p.avg_drying_rate + ' %/h' : '\u2014'}</td>
+                    <td>${p.median_recovery_time !== null ? p.median_recovery_time + ' h' : '\u2014'}</td>
+                    <td>${p.avg_rebound_rate !== null ? p.avg_rebound_rate + ' %/h' : '\u2014'}</td>
+                    <td>${runoffStr}</td>
+                    <td class="${earlyOffClass}">${earlyOffStr}</td>
+                    <td>${p.cycles_30d}</td>
+                    <td class="${statusClass}">${p.status}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load zone profiles:', e);
+    }
+
+    // Warm hours recommendation
+    try {
+        const rec = await fetchJSON('/api/analytics/warm-hours');
+        const section = document.getElementById('warm-hours-section');
+        const info = document.getElementById('warm-hours-info');
+
+        if (rec && rec.recommended) {
+            section.style.display = '';
+            const confPct = Math.round(rec.confidence * 100);
+            const changed = rec.recommended !== rec.current;
+            info.innerHTML = `
+                <div class="warm-hours-grid">
+                    <div class="warm-metric">
+                        <span class="warm-label">Current</span>
+                        <span class="warm-value">${rec.current}h</span>
+                    </div>
+                    <div class="warm-metric">
+                        <span class="warm-label">Recommended</span>
+                        <span class="warm-value ${changed ? 'warm-changed' : ''}">${rec.recommended}h</span>
+                    </div>
+                    <div class="warm-metric">
+                        <span class="warm-label">Confidence</span>
+                        <span class="warm-value">${confPct}%</span>
+                    </div>
+                    <div class="warm-metric">
+                        <span class="warm-label">Data</span>
+                        <span class="warm-value">${rec.data_cycles} cycles / ${rec.data_days} days</span>
+                    </div>
+                </div>
+                <p class="warm-reasoning">${rec.reasoning}</p>
+            `;
+        } else {
+            section.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('Failed to load warm hours recommendation:', e);
+    }
+
+    // Heating cycles
+    try {
+        const cycles = await fetchJSON(`/api/analytics/cycles?hours=${currentHours}`);
+        const tbody = document.getElementById('cycles-body');
+        const table = document.getElementById('cycles-table');
+        const noMsg = document.getElementById('no-cycles');
+
+        tbody.innerHTML = '';
+        if (!cycles.length) {
+            table.style.display = 'none';
+            noMsg.style.display = '';
+        } else {
+            table.style.display = '';
+            noMsg.style.display = 'none';
+            cycles.slice(0, 30).forEach(c => {
+                const shortName = c.zone_name.includes('/') ?
+                    c.zone_name.split('/').pop() : c.zone_name;
+                const runoffStr = c.runoff_drop !== null && c.runoff_drop !== undefined && c.runoff_drop > 0
+                    ? '-' + c.runoff_drop + '%' : '\u2014';
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${shortName}</td>
+                    <td>${formatTime(c.start_ts)}</td>
+                    <td>${c.duration_hours}h</td>
+                    <td>${c.humidity_start || '\u2014'}% \u2192 ${c.humidity_end || '\u2014'}%</td>
+                    <td>${c.drying_rate !== null ? c.drying_rate + ' %/h' : '\u2014'}</td>
+                    <td>${c.rebound_rate !== null ? c.rebound_rate + ' %/h' : '\u2014'}</td>
+                    <td class="runoff-value">${runoffStr}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load heating cycles:', e);
+    }
+}
+
+// ── Energy ──────────────────────────────────────────────────────────────────
+async function loadEnergy() {
+    // Energy consumption chart
+    try {
+        const readings = await fetchJSON(`/api/energy?hours=${currentHours}`);
+        const section = document.getElementById('energy-chart-section');
+
+        if (!readings.length) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = '';
+
+        const data = readings.map(r => ({
+            x: r.timestamp,
+            y: r.wh * 2,  // Convert Wh per 30min back to average W for display
+        }));
+
+        if (energyChart) energyChart.destroy();
+
+        const timeUnit = currentHours <= 24 ? 'hour' :
+                         currentHours <= 168 ? 'day' : 'week';
+
+        energyChart = new Chart(document.getElementById('energyChart'), {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Power (W)',
+                    data: data,
+                    borderColor: '#8b5cf6',
+                    backgroundColor: '#8b5cf620',
+                    tension: 0.3,
+                    pointRadius: currentHours <= 72 ? 2 : 0,
+                    borderWidth: 2,
+                    fill: true,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { position: 'top' } },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: { unit: timeUnit },
+                    },
+                    y: {
+                        title: { display: true, text: 'Power (W)' },
+                        beginAtZero: true,
+                    },
+                },
+            },
+        });
+    } catch (e) {
+        console.error('Failed to load energy chart:', e);
+    }
+
+    // Energy analysis summary
+    try {
+        const analysis = await fetchJSON('/api/energy/analysis?days=30');
+        const section = document.getElementById('energy-analytics-section');
+        const summary = document.getElementById('energy-summary');
+
+        if (!analysis.length) {
+            section.style.display = 'none';
+        } else {
+            section.style.display = '';
+            const latest = analysis[0];  // Most recent day
+            const totalDays = analysis.length;
+            const avgTotal = analysis.reduce((s, d) => s + (d.total_kwh || 0), 0) / totalDays;
+            const avgHp = analysis.reduce((s, d) => s + (d.heatpump_kwh || 0), 0) / totalDays;
+            const avgBase = analysis.reduce((s, d) => s + (d.base_kwh || 0), 0) / totalDays;
+
+            summary.innerHTML = `
+                <div class="warm-metric">
+                    <span class="warm-label">Yesterday Total</span>
+                    <span class="warm-value">${latest.total_kwh || '\u2014'} kWh</span>
+                </div>
+                <div class="warm-metric">
+                    <span class="warm-label">Heat Pump</span>
+                    <span class="warm-value energy-hp">${latest.heatpump_kwh || '\u2014'} kWh</span>
+                </div>
+                <div class="warm-metric">
+                    <span class="warm-label">Base Load</span>
+                    <span class="warm-value">${latest.base_kwh || '\u2014'} kWh</span>
+                </div>
+                <div class="warm-metric">
+                    <span class="warm-label">kWh / heating hr</span>
+                    <span class="warm-value">${latest.kwh_per_heating_hr || '\u2014'}</span>
+                </div>
+                <div class="warm-metric">
+                    <span class="warm-label">Avg Total (${totalDays}d)</span>
+                    <span class="warm-value">${avgTotal.toFixed(1)} kWh</span>
+                </div>
+                <div class="warm-metric">
+                    <span class="warm-label">Avg Heat Pump (${totalDays}d)</span>
+                    <span class="warm-value energy-hp">${avgHp.toFixed(1)} kWh</span>
+                </div>
+            `;
+        }
+    } catch (e) {
+        console.error('Failed to load energy analysis:', e);
+    }
+
+    // Savings
+    try {
+        const savings = await fetchJSON('/api/energy/savings');
+        const div = document.getElementById('savings-info');
+        if (savings && savings.reasoning) {
+            div.style.display = '';
+            div.innerHTML = `<p class="warm-reasoning">${savings.reasoning}</p>`;
+        } else {
+            div.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('Failed to load savings:', e);
+    }
+
+    // Temperature band efficiency
+    try {
+        const bands = await fetchJSON('/api/energy/efficiency');
+        const section = document.getElementById('temp-band-section');
+        const tbody = document.getElementById('temp-band-body');
+
+        tbody.innerHTML = '';
+        if (!bands.length) {
+            section.style.display = 'none';
+        } else {
+            section.style.display = '';
+            bands.forEach(b => {
+                const tr = document.createElement('tr');
+                const kwh = b.avg_kwh_per_hr;
+                let effClass = '';
+                if (kwh <= 1.5) effClass = 'eff-good';
+                else if (kwh <= 2.5) effClass = 'eff-moderate';
+                else effClass = 'eff-poor';
+
+                tr.innerHTML = `
+                    <td>${b.temp_band}</td>
+                    <td class="${effClass}">${kwh} kWh/h</td>
+                    <td>${b.total_heating_hours}h</td>
+                    <td>${b.days}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load temp band efficiency:', e);
+    }
+}
+
+// ── Load everything ─────────────────────────────────────────────────────────
+async function loadAll() {
+    await Promise.all([loadLatest(), loadCharts(), loadActions(), loadStats(), loadAnalytics(), loadEnergy()]);
+}
+
+// Initial load
+loadAll();
+
+// Auto-refresh status cards every 60 seconds
+setInterval(loadLatest, 60000);
+
+// Full refresh every 10 minutes
+setInterval(loadAll, 600000);
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+project_id = "jywzwsnzyyqqadhssvrm"
+
+[functions.weather]
+verify_jwt = false
+
+[functions.airzone]
+verify_jwt = false
+
+[functions.linky]
+verify_jwt = false
+
+[functions.netatmo]
+verify_jwt = false
+
+[functions.humidity-control]
+verify_jwt = false
+
+[functions.verify-password]
+verify_jwt = false
+
+[functions.heating-analysis]
+verify_jwt = false
+
+[functions.emergency-stop]
+verify_jwt = false
+
+[functions.dp-predict]
+verify_jwt = false

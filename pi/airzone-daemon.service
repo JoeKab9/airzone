@@ -1,0 +1,19 @@
+[Unit]
+Description=Airzone Humidity Controller Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/airzone/pi
+ExecStart=/home/pi/airzone/venv/bin/python3 airzone_daemon.py
+Restart=always
+RestartSec=60
+Environment=PYTHONUNBUFFERED=1
+
+# Load credentials from env file (optional, more secure than plaintext config)
+EnvironmentFile=-/home/pi/airzone/.env
+
+[Install]
+WantedBy=multi-user.target
