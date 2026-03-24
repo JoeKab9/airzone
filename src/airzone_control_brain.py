@@ -2,8 +2,7 @@
 Airzone Control Brain — DP-Spread Predictive Controller
 ========================================================
 Replaces simple humidity-threshold control with a dew-point-spread-based
-predictive decision engine.  Ported from the Loveable TypeScript edge function
-(supabase/functions/humidity-control/index.ts).
+predictive decision engine.
 
 The brain uses:
  - Sensor fusion (Netatmo humidity preferred, temperatures averaged)
@@ -41,13 +40,14 @@ log = logging.getLogger("airzone")
 # DP spread thresholds — hysteresis band to prevent cycling
 DP_SPREAD_HEAT_ON = 4       # Heat ON when spread drops below 4°C
 DP_SPREAD_HEAT_OFF = 6      # Heat OFF when spread reaches 6°C (safe margin)
+DP_SPREAD_CRITICAL = 2      # Immediate override — heat NOW regardless of COP/deferral
 MAX_INDOOR_TEMP = 18        # Never heat if indoor > 18°C
 PREDICTIVE_SHUTOFF_MARGIN = 1.0   # Shut off 1°C early for concrete runoff
-TARIFF = 0.1927             # €/kWh (EDF base tariff)
+DEFAULT_TARIFF = 0.1927     # €/kWh (EDF Tarif Bleu Base 9kVA) — overridden by config/DB
 PREDICTION_HORIZON_H = 3    # Predict DP spread 3 hours ahead
 PREDICTION_TRUST_RMSE = 1.5 # Trust predictions only if RMSE < 1.5°C
 MIN_PREDICTIONS_FOR_TRUST = 10
-ESTIMATED_HP_KW = 2.5       # Assumed heat pump power for energy estimation
+DEFAULT_HP_KW = 2.5         # Default heat pump power — overridden by config
 
 # Netatmo → Airzone zone name mapping (must match exact Airzone casing)
 NETATMO_TO_AIRZONE = {
@@ -316,8 +316,7 @@ def predict_dp_spread(
 
 def create_brain_tables(conn: sqlite3.Connection):
     """Create control brain tables if they don't exist."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS control_log (
+    conn.execute("""CREATE TABLE IF NOT EXISTS control_log (
             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at            TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             zone_name             TEXT    NOT NULL,
@@ -336,14 +335,10 @@ def create_brain_tables(conn: sqlite3.Connection):
             prediction_decision   TEXT,
             reason                TEXT,
             success               INTEGER DEFAULT 1
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_control_log_ts
-            ON control_log(created_at);
-        CREATE INDEX IF NOT EXISTS idx_control_log_zone_ts
-            ON control_log(zone_name, created_at);
-
-        CREATE TABLE IF NOT EXISTS daily_assessment (
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_control_log_ts ON control_log(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_control_log_zone_ts ON control_log(zone_name, created_at)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS daily_assessment (
             id                      INTEGER PRIMARY KEY AUTOINCREMENT,
             date                    TEXT    NOT NULL UNIQUE,
             avg_humidity_before     INTEGER,
@@ -359,18 +354,14 @@ def create_brain_tables(conn: sqlite3.Connection):
             estimation_accuracy_pct REAL,
             correction_factor       REAL,
             notes                   TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_assessment_date
-            ON daily_assessment(date);
-
-        CREATE TABLE IF NOT EXISTS system_state (
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_assessment_date ON daily_assessment(date)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS system_state (
             key        TEXT PRIMARY KEY,
             value      TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS dp_spread_predictions (
+        )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS dp_spread_predictions (
             id                       INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at               TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             zone_name                TEXT    NOT NULL,
@@ -390,13 +381,9 @@ def create_brain_tables(conn: sqlite3.Connection):
             validated                INTEGER DEFAULT 0,
             validated_at             TEXT,
             decision_correct         INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_predictions_zone_ts
-            ON dp_spread_predictions(zone_name, predicted_for);
-        CREATE INDEX IF NOT EXISTS idx_predictions_validated
-            ON dp_spread_predictions(validated, predicted_for);
-    """)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_zone_ts ON dp_spread_predictions(zone_name, predicted_for)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_validated ON dp_spread_predictions(validated, predicted_for)")
     conn.commit()
 
 
@@ -558,7 +545,8 @@ def _store_prediction(
 
 # ── Daily Assessment ─────────────────────────────────────────────────────────
 
-def _run_daily_assessment(conn: sqlite3.Connection) -> Optional[dict]:
+def _run_daily_assessment(conn: sqlite3.Connection,
+                          cfg: dict | None = None) -> Optional[dict]:
     """Generate a daily assessment from today's control_log entries."""
     today = date.today().isoformat()
 
@@ -609,8 +597,10 @@ def _run_daily_assessment(conn: sqlite3.Connection) -> Optional[dict]:
     cf_data = _get_state(conn, "learned_correction_factor")
     cf = cf_data.get("factor", 1.0) if cf_data else 1.0
 
-    est_kwh = (heating_minutes / 60) * ESTIMATED_HP_KW * cf
-    est_cost = est_kwh * TARIFF
+    hp_kw = (cfg or {}).get("hp_kw", DEFAULT_HP_KW)
+    tariff = (cfg or {}).get("tariff", DEFAULT_TARIFF)
+    est_kwh = (heating_minutes / 60) * hp_kw * cf
+    est_cost = est_kwh * tariff
 
     dp_improved = avg_spread_after > avg_spread_before
     hum_improved = avg_hum_after < avg_hum_before
@@ -1178,14 +1168,14 @@ class ControlBrain:
         dry_run: bool,
     ):
         """Handle the case where DP spread is below HEAT_ON threshold."""
-        if dp_spread <= 2:
-            # CRITICAL: always heat immediately
+        if dp_spread <= DP_SPREAD_CRITICAL:
+            # CRITICAL: always heat immediately — no deferral, no COP check
             decision.action = "heating_on"
             decision.prediction_decision = "heat_anyway"
             decision.reason = (
-                f"⚠ CRITICAL DP spread {dp_spread}° (< 2°). "
-                f"Condensation imminent. Indoor {indoor_temp}°C, "
-                f"DP {dewpoint}°C."
+                f"⚠ CRITICAL DP spread {dp_spread}° (≤ {DP_SPREAD_CRITICAL}°). "
+                f"Condensation imminent. Immediate override — no deferral. "
+                f"Indoor {indoor_temp}°C, DP {dewpoint}°C."
             )
             heating_stats["totalOnMinutes"] = \
                 heating_stats.get("totalOnMinutes", 0) + 5

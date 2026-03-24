@@ -21,7 +21,6 @@ python -m PyInstaller ^
     --hidden-import "airzone_thermal_model" ^
     --hidden-import "airzone_baseline" ^
     --hidden-import "airzone_best_price" ^
-    --hidden-import "airzone_supabase" ^
     --hidden-import "airzone_weather" ^
     --hidden-import "airzone_analytics" ^
     --hidden-import "airzone_linky" ^

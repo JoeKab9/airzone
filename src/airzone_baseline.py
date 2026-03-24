@@ -3,8 +3,6 @@ Airzone Energy Baseline Learning
 ==================================
 Learns per-hour-of-day standby energy consumption from Linky load curve data.
 
-Ported from Loveable TypeScript (supabase/functions/learn-baseline/index.ts).
-
 Logic:
 1. Fetch last 7 days of Linky load curve data
 2. Cross-reference with control_log to identify hours when heating was active
@@ -31,16 +29,14 @@ ALPHA = 0.3  # EMA weight for new data
 
 def create_baseline_tables(conn: sqlite3.Connection):
     """Create energy baseline tables if they don't exist."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS energy_baseline (
+    conn.execute("""CREATE TABLE IF NOT EXISTS energy_baseline (
             hour_of_day     INTEGER PRIMARY KEY,
             baseline_wh     REAL    NOT NULL DEFAULT 0,
             sample_count    INTEGER NOT NULL DEFAULT 0,
             last_updated    TEXT,
             notes           TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS heating_experiments (
+        )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS heating_experiments (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             start_date      TEXT    NOT NULL,
             end_date        TEXT    NOT NULL,
@@ -53,8 +49,7 @@ def create_baseline_tables(conn: sqlite3.Connection):
             min_dp_spread   REAL,
             recommendation  TEXT,
             UNIQUE(start_date)
-        );
-    """)
+        )""")
     conn.commit()
 
 

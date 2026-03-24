@@ -3,8 +3,6 @@ Airzone Thermal Model Learning + DP Predictions
 =================================================
 Per-zone self-learning thermal models that predict DP spread 3h and 24h ahead.
 
-Ported from Loveable TypeScript (supabase/functions/dp-predict/index.ts).
-
 For each heating_off event, learns via linear regression:
  - Runoff duration as fn of heating duration
  - Peak temperature rise during runoff
@@ -70,8 +68,7 @@ def _linear_regression(xs: list[float], ys: list[float]) -> tuple[float, float]:
 
 def create_prediction_tables(conn: sqlite3.Connection):
     """Create tables for prediction tracking and coefficient learning."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS thermal_models (
+    conn.execute("""CREATE TABLE IF NOT EXISTS thermal_models (
             zone_name        TEXT PRIMARY KEY,
             samples          INTEGER DEFAULT 0,
             runoff_base      REAL DEFAULT 0,
@@ -84,9 +81,8 @@ def create_prediction_tables(conn: sqlite3.Connection):
             confidence       REAL DEFAULT 0,
             data_days        REAL DEFAULT 0,
             last_updated     TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS dp_predict_coefficients (
+        )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS dp_predict_coefficients (
             id                    INTEGER PRIMARY KEY CHECK (id = 1),
             outdoor_temp_weight   REAL DEFAULT 0,
             outdoor_hum_weight    REAL DEFAULT 0,
@@ -95,10 +91,8 @@ def create_prediction_tables(conn: sqlite3.Connection):
             learning_count        INTEGER DEFAULT 0,
             last_avg_error        REAL,
             last_updated          TEXT
-        );
-
-        INSERT OR IGNORE INTO dp_predict_coefficients (id) VALUES (1);
-    """)
+        )""")
+    conn.execute("INSERT OR IGNORE INTO dp_predict_coefficients (id) VALUES (1)")
     conn.commit()
 
 

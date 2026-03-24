@@ -63,8 +63,7 @@ MODULE_TYPES = {
 
 def create_netatmo_tables(conn: sqlite3.Connection):
     """Create Netatmo storage tables if they don't exist."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS netatmo_readings (
+    conn.execute("""CREATE TABLE IF NOT EXISTS netatmo_readings (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp   TEXT    NOT NULL,
             module_mac  TEXT    NOT NULL,
@@ -75,13 +74,10 @@ def create_netatmo_tables(conn: sqlite3.Connection):
             noise       INTEGER,
             pressure    REAL,
             UNIQUE(timestamp, module_mac)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_netatmo_ts
-            ON netatmo_readings(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_netatmo_module_ts
-            ON netatmo_readings(module_mac, timestamp);
-    """)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_netatmo_ts ON netatmo_readings(timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_netatmo_module_ts ON netatmo_readings(module_mac, timestamp)")
+    conn.commit()
     conn.commit()
 
 
@@ -123,7 +119,7 @@ def _load_tokens() -> dict | None:
 
 
 def _save_tokens(tokens: dict):
-    """Persist tokens to secure storage (OS keychain) or fallback file."""
+    """Persist tokens to .env or fallback file."""
     try:
         from airzone_secrets import secrets as sec
         sec.set("netatmo_access_token", tokens.get("access_token", ""))
@@ -365,17 +361,35 @@ def get_measure(token: str, device_id: str,
     if not data or "body" not in data:
         return []
 
+    body = data["body"]
     results = []
-    for ts_str, values in data["body"].items():
-        ts = int(ts_str)
-        row = {
-            "timestamp": datetime.utcfromtimestamp(ts).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"),
-        }
-        for i, mtype in enumerate(measure_types):
-            if i < len(values) and values[i] is not None:
-                row[mtype] = values[i]
-        results.append(row)
+
+    # Body can be a dict {timestamp: [values]} or a list [{beg_time, step_time, value}]
+    if isinstance(body, dict):
+        for ts_str, values in body.items():
+            ts = int(ts_str)
+            row = {
+                "timestamp": datetime.utcfromtimestamp(ts).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"),
+            }
+            for i, mtype in enumerate(measure_types):
+                if i < len(values) and values[i] is not None:
+                    row[mtype] = values[i]
+            results.append(row)
+    elif isinstance(body, list):
+        for chunk in body:
+            beg = chunk.get("beg_time", 0)
+            step = chunk.get("step_time", 1800)
+            for j, values in enumerate(chunk.get("value", [])):
+                ts = beg + j * step
+                row = {
+                    "timestamp": datetime.utcfromtimestamp(ts).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"),
+                }
+                for i, mtype in enumerate(measure_types):
+                    if i < len(values) and values[i] is not None:
+                        row[mtype] = values[i]
+                results.append(row)
 
     results.sort(key=lambda r: r["timestamp"])
     return results
@@ -501,16 +515,14 @@ def get_netatmo_module_names(conn: sqlite3.Connection) -> list[str]:
 
 # ── Backfill (Historical Data) ───────────────────────────────────────────────
 
-BACKFILL_TABLE_SQL = """
-    CREATE TABLE IF NOT EXISTS netatmo_sync_status (
+BACKFILL_TABLE_SQL = """CREATE TABLE IF NOT EXISTS netatmo_sync_status (
         module_mac   TEXT PRIMARY KEY,
         module_name  TEXT,
         oldest_date  TEXT,
         newest_date  TEXT,
         total_readings INTEGER DEFAULT 0,
         last_sync    TEXT
-    );
-"""
+    )"""
 
 
 def backfill_history(client_id: str, client_secret: str,
@@ -534,7 +546,7 @@ def backfill_history(client_id: str, client_secret: str,
         return {"error": "No stations found", "modules": []}
 
     create_netatmo_tables(conn)
-    conn.executescript(BACKFILL_TABLE_SQL)
+    conn.execute(BACKFILL_TABLE_SQL)
     conn.commit()
 
     end_date = date.today()
@@ -614,7 +626,7 @@ def backfill_history(client_id: str, client_secret: str,
 def get_sync_status(conn: sqlite3.Connection) -> list[dict]:
     """Return backfill sync status for all modules."""
     try:
-        conn.executescript(BACKFILL_TABLE_SQL)
+        conn.execute(BACKFILL_TABLE_SQL)
         rows = conn.execute(
             "SELECT module_mac, module_name, oldest_date, newest_date, "
             "       total_readings, last_sync "

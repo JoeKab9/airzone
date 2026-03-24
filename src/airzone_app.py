@@ -75,8 +75,8 @@ def _fmt_date(iso: str) -> str:
 
 
 # ── Secure config saving ────────────────────────────────────────────────────
-# Sensitive keys are stored in the OS keychain; the config file only keeps
-# non-sensitive settings.  When reading, load_config() merges both sources.
+# Sensitive keys are stored in .env (project-isolated); the config file only
+# keeps non-sensitive settings.  When reading, load_config() merges both.
 
 _SENSITIVE_CONFIG_KEYS = {
     "email", "password", "linky_token", "linky_prm",
@@ -85,7 +85,7 @@ _SENSITIVE_CONFIG_KEYS = {
 
 
 def _save_config_secure(cfg: dict):
-    """Save config: sensitive values → keychain, rest → JSON file."""
+    """Save config: sensitive values → .env, rest → JSON file."""
     try:
         from airzone_secrets import secrets
         for key in _SENSITIVE_CONFIG_KEYS:
@@ -93,18 +93,13 @@ def _save_config_secure(cfg: dict):
             if val:
                 secrets.set(key, str(val))
     except Exception:
-        pass  # Keychain unavailable — everything stays in config file
+        pass  # Secrets module unavailable — everything stays in config file
 
     # Write config file with sensitive values blanked out
     file_cfg = dict(cfg)
-    try:
-        from airzone_secrets import secrets as _sec
-        if _sec.using_keyring:
-            for key in _SENSITIVE_CONFIG_KEYS:
-                if key in file_cfg and file_cfg[key]:
-                    file_cfg[key] = ""
-    except Exception:
-        pass  # Keep values in file if keychain failed
+    for key in _SENSITIVE_CONFIG_KEYS:
+        if key in file_cfg and file_cfg[key]:
+            file_cfg[key] = ""
 
     CONFIG_PATH.write_text(json.dumps(file_cfg, indent=2) + "\n")
 
@@ -694,12 +689,9 @@ class SettingsDialog(QDialog):
         try:
             from airzone_secrets import secrets as _sec
             backend = _sec.backend_name
-            icon = "🔒" if _sec.using_keyring else "📁"
-            sec_lbl = QLabel(f"{icon} Credentials stored in: {backend}")
+            sec_lbl = QLabel(f"📁 Credentials stored in: {backend}")
             sec_lbl.setStyleSheet(
-                "color: #27ae60; font-size: 11px; padding: 4px;"
-                if _sec.using_keyring else
-                "color: #e67e22; font-size: 11px; padding: 4px;")
+                "color: #27ae60; font-size: 11px; padding: 4px;")
             layout.addWidget(sec_lbl)
         except Exception:
             pass
@@ -1000,6 +992,20 @@ class ZoneHistoryPanel(QWidget):
             dew_pts.append(r.get("outdoor_dew_point"))
             out_hums.append(r.get("outdoor_humidity"))
 
+        # Calculate indoor DP spread: indoor_temp − dewpoint(indoor_temp, indoor_rh)
+        import math as _math
+        dp_spreads = []
+        for t_v, h_v in zip(temps, hums):
+            if t_v is not None and h_v is not None and h_v > 0:
+                try:
+                    g = _math.log(h_v / 100) + (17.625 * t_v) / (243.04 + t_v)
+                    dp = (243.04 * g) / (17.625 - g)
+                    dp_spreads.append(round(t_v - dp, 1))
+                except Exception:
+                    dp_spreads.append(None)
+            else:
+                dp_spreads.append(None)
+
         self.fig.clear()
         ax_temp = self.fig.add_subplot(111)
         ax_hum = ax_temp.twinx()
@@ -1034,7 +1040,21 @@ class ZoneHistoryPanel(QWidget):
         else:
             ln4 = []
 
-        ax_temp.set_ylabel("Temperature (°C)", fontsize=9, color="#2980b9")
+        # DP Spread line — the core control metric (orange, left axis)
+        valid = [(t, v) for t, v in zip(times, dp_spreads) if v is not None]
+        if valid:
+            ln6 = ax_temp.plot([t for t, _ in valid], [v for _, v in valid],
+                               color="#e59230", linewidth=2.0, alpha=0.95,
+                               label="DP Spread", zorder=5)
+            # Threshold reference lines: 4°C = ON zone, 6°C = safe zone
+            ax_temp.axhline(y=4, color="#e74c3c", linestyle=":", linewidth=1.0,
+                            alpha=0.55, zorder=4)
+            ax_temp.axhline(y=6, color="#f39c12", linestyle=":", linewidth=1.0,
+                            alpha=0.55, zorder=4)
+        else:
+            ln6 = []
+
+        ax_temp.set_ylabel("Temperature / DP Spread (°C)", fontsize=9, color="#2980b9")
         ax_temp.tick_params(axis="y", labelsize=8, labelcolor="#2980b9")
 
         # Right axis: humidity (%)
@@ -1064,7 +1084,7 @@ class ZoneHistoryPanel(QWidget):
         ax_hum.tick_params(axis="y", labelsize=8, labelcolor="#27ae60")
 
         # Combined legend
-        lines = ((ln1 or []) + (ln2 or []) + (ln4 or [])
+        lines = ((ln1 or []) + (ln2 or []) + (ln4 or []) + (ln6 or [])
                  + (ln3 or []) + (ln5 or []))
         if lines:
             import matplotlib.patches as mpatches
@@ -3034,7 +3054,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec() == QDialog.Accepted:
             self.cfg = dlg.result_config()
-            # Store sensitive values in OS keychain, strip from config file
+            # Store sensitive values in .env, strip from config file
             _save_config_secure(self.cfg)
             self.poll_timer.setInterval(self.cfg["poll_interval_seconds"] * 1000)
             self.thresh_lbl.setText(self._thresh_text())
@@ -3321,18 +3341,44 @@ def main():
     cfg = load_config(CONFIG_PATH)
     api = AirzoneCloudAPI()
 
-    # Hardcoded credentials — auto-login
-    cfg["email"] = "contis251@gmail.com"
-    cfg["password"] = "Contis251€"
+    # Load credentials from .env (project-isolated)
+    try:
+        from airzone_secrets import secrets
+        for key in ("email", "password"):
+            stored = secrets.get(key)
+            if stored:
+                cfg[key] = stored
+    except Exception:
+        pass  # Secrets module unavailable — rely on config file values
 
-    if not api.load_cached_tokens():
+    has_creds = bool(cfg.get("email")) and bool(cfg.get("password"))
+
+    if has_creds and api.load_cached_tokens():
+        # Tokens still valid — go straight to main window
+        win = MainWindow(api, cfg)
+        win.show()
+    elif has_creds:
+        # Have credentials but tokens expired — try login, then show main
         try:
             api.ensure_token(cfg["email"], cfg["password"])
         except Exception:
             pass  # will retry on first poll
+        win = MainWindow(api, cfg)
+        win.show()
+    else:
+        # No stored credentials — show login dialog first
+        login = LoginWindow(api, cfg)
+        def _on_login(email, password):
+            cfg["email"] = email
+            cfg["password"] = password
+            login.hide()
+            main_win = MainWindow(api, cfg)
+            main_win.show()
+            # Keep reference so it isn't garbage-collected
+            app._main_win = main_win
+        login.logged_in.connect(_on_login)
+        login.show()
 
-    win = MainWindow(api, cfg)
-    win.show()
     sys.exit(app.exec_())
 
 

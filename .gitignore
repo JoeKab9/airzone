@@ -15,7 +15,27 @@ __pycache__/
 # Environment / credentials
 .env
 *.env
+.airzone_secrets.json
+crashreport.txt
 
 # Config with tokens
 airzone_config.json
 pi/airzone_pi_config.json
+
+# Collector database
+collector_data/
+
+# Pi runtime data (secrets + databases)
+pi/data/
+
+# Build copy
+dist (1)/
+
+# Windows binary
+*.exe
+
+# Personal reference documents (PDFs, not code)
+docs/
+
+# Best Price cache
+Best Price/cache/

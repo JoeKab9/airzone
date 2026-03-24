@@ -18,7 +18,10 @@
       "Bash(curl -s \"https://api.github.com/repos/bokub/conso-api/contents/content/documentation.md\")",
       "Bash(python3 -c \"import json,sys,base64; data=json.load\\(sys.stdin\\); print\\(base64.b64decode\\(data[''content'']\\).decode\\(\\)\\)\")",
       "Bash(python3 best_price.py --help)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(python3 best_price.py --quick)",
+      "Bash(python3 best_price.py --quick --years 2)",
+      "Bash(grep -r \"venv\\\\|virtualenv\\\\|\\\\.venv\\\\|activate\\\\|VIRTUAL_ENV\" /Users/mauritsbeerepoot/ClaudeCodeProjects/airzone --include=*.py --include=*.sh --include=*.bat)"
     ]
   }
 }

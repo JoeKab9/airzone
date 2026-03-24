@@ -136,28 +136,22 @@ def load_config(path: Path) -> dict:
     with open(path) as f:
         cfg = json.load(f)
 
-    # Environment variable overrides (safer than storing plaintext)
-    if os.environ.get("AIRZONE_EMAIL"):
-        cfg["email"] = os.environ["AIRZONE_EMAIL"]
-    if os.environ.get("AIRZONE_PASSWORD"):
-        cfg["password"] = os.environ["AIRZONE_PASSWORD"]
-
     merged = {**DEFAULT_CONFIG, **cfg}
 
-    # ── Secure credential storage ────────────────────────────────────
-    # Migrate plaintext secrets to OS keychain on first run, then
-    # always load credentials from secure storage.
+    # ── Credential loading from .env ─────────────────────────────────
+    # Migrate plaintext secrets from config to .env on first run, then
+    # always load credentials from .env (project-isolated).
     try:
         from airzone_secrets import secrets
         secrets.migrate_from_config(merged, config_path=path)
-        # Overlay secrets onto config (keychain takes precedence)
+        # .env values take precedence over config file
         for key in ("email", "password", "linky_token", "linky_prm",
                     "netatmo_client_id", "netatmo_client_secret"):
             val = secrets.get(key)
             if val:
                 merged[key] = val
     except Exception as e:
-        log.debug("Secure storage not available: %s", e)
+        log.debug("Secrets module not available: %s", e)
 
     return merged
 
@@ -221,7 +215,7 @@ class AirzoneCloudAPI:
         # Library uses TOKEN_REFRESH_PERIOD = timedelta(hours=12)
         self.token_expiry = datetime.now() + timedelta(hours=12)
         self.session.headers["Authorization"] = f"Bearer {self.token}"
-        # Cache tokens to secure storage (OS keychain) or fallback file
+        # Cache tokens to .env or fallback file
         try:
             from airzone_secrets import secrets
             secrets.set("airzone_token", token)
@@ -237,7 +231,7 @@ class AirzoneCloudAPI:
 
     def load_cached_tokens(self) -> bool:
         """Try to reuse a previously saved token. Returns True if valid."""
-        # Try secure storage first (OS keychain)
+        # Try .env storage first
         try:
             from airzone_secrets import secrets
             token = secrets.get("airzone_token")
@@ -247,12 +241,12 @@ class AirzoneCloudAPI:
                 expiry = datetime.fromisoformat(expiry_str)
                 if datetime.now() < expiry:
                     self._store_tokens(token, refresh)
-                    log.debug("Reusing cached auth token from keychain (expires %s)", expiry)
+                    log.debug("Reusing cached auth token from .env (expires %s)", expiry)
                     return True
             # Migrate old token file if it exists
             if TOKEN_PATH.exists():
                 secrets.migrate_tokens(TOKEN_PATH, prefix="airzone")
-                return self.load_cached_tokens()  # Retry from keychain
+                return self.load_cached_tokens()  # Retry from .env
         except Exception:
             pass
         # Fallback: read from plaintext file

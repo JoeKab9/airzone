@@ -42,6 +42,10 @@ _cache = {
     "hourly_temps": [],
     "hourly_dew_points": [],
     "hourly_rel_humidity": [],
+    "hourly_wind_speed": [],
+    "hourly_wind_direction": [],
+    "hourly_rain": [],
+    "hourly_solar_radiation": [],
 }
 
 
@@ -50,7 +54,7 @@ def fetch_forecast(lat: float, lon: float, timeout: int = 10) -> dict:
     resp = requests.get(OPEN_METEO_URL, params={
         "latitude": lat,
         "longitude": lon,
-        "hourly": "temperature_2m,dew_point_2m,relative_humidity_2m",
+        "hourly": "temperature_2m,dew_point_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,rain,shortwave_radiation",
         "timezone": "Europe/Paris",
         "forecast_days": 2,
     }, timeout=timeout)
@@ -87,6 +91,10 @@ def get_forecast(lat: float, lon: float, max_age_seconds: int = 3600) -> dict:
             "hourly_dew_points": data["hourly"].get("dew_point_2m", []),
             "hourly_rel_humidity": data["hourly"].get(
                 "relative_humidity_2m", []),
+            "hourly_wind_speed": data["hourly"].get("wind_speed_10m", []),
+            "hourly_wind_direction": data["hourly"].get("wind_direction_10m", []),
+            "hourly_rain": data["hourly"].get("rain", []),
+            "hourly_solar_radiation": data["hourly"].get("shortwave_radiation", []),
         }
         WEATHER_CACHE_PATH.write_text(json.dumps(_cache))
         log.info("Weather forecast refreshed (%d hours of data)",
@@ -120,7 +128,15 @@ def compute_warm_window(forecast: dict, warm_hours_count: int = 6) -> dict:
     current_hour_temp = None
     current_hour_dew_point = None
     current_hour_humidity = None
+    current_hour_wind_speed = None
+    current_hour_wind_dir = None
+    current_hour_rain = None
+    current_hour_solar = None
     rel_humidities = forecast.get("hourly_rel_humidity", [])
+    wind_speeds = forecast.get("hourly_wind_speed", [])
+    wind_dirs = forecast.get("hourly_wind_direction", [])
+    rains = forecast.get("hourly_rain", [])
+    solars = forecast.get("hourly_solar_radiation", [])
 
     for i, (t_str, temp) in enumerate(zip(times, temps)):
         if temp is None:
@@ -136,6 +152,14 @@ def compute_warm_window(forecast: dict, warm_hours_count: int = 6) -> dict:
                 current_hour_dew_point = dew_points[i]
             if i < len(rel_humidities) and rel_humidities[i] is not None:
                 current_hour_humidity = rel_humidities[i]
+            if i < len(wind_speeds) and wind_speeds[i] is not None:
+                current_hour_wind_speed = wind_speeds[i]
+            if i < len(wind_dirs) and wind_dirs[i] is not None:
+                current_hour_wind_dir = wind_dirs[i]
+            if i < len(rains) and rains[i] is not None:
+                current_hour_rain = rains[i]
+            if i < len(solars) and solars[i] is not None:
+                current_hour_solar = solars[i]
 
     if not candidates:
         return {
@@ -145,6 +169,10 @@ def compute_warm_window(forecast: dict, warm_hours_count: int = 6) -> dict:
             "current_outdoor_temp": current_hour_temp,
             "current_outdoor_dew_point": current_hour_dew_point,
             "current_outdoor_humidity": current_hour_humidity,
+            "current_outdoor_wind_speed": current_hour_wind_speed,
+            "current_outdoor_wind_dir": current_hour_wind_dir,
+            "current_outdoor_rain": current_hour_rain,
+            "current_outdoor_solar": current_hour_solar,
             "avg_warm_temp": None,
             "is_warm_now": False,
             "next_warm_start": None,
@@ -188,6 +216,10 @@ def compute_warm_window(forecast: dict, warm_hours_count: int = 6) -> dict:
         "current_outdoor_temp": current_hour_temp,
         "current_outdoor_dew_point": current_hour_dew_point,
         "current_outdoor_humidity": current_hour_humidity,
+        "current_outdoor_wind_speed": current_hour_wind_speed,
+        "current_outdoor_wind_dir": current_hour_wind_dir,
+        "current_outdoor_rain": current_hour_rain,
+        "current_outdoor_solar": current_hour_solar,
         "avg_warm_temp": round(avg_warm, 1),
         "is_warm_now": is_warm,
         "next_warm_start": next_start,

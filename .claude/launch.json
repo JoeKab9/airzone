@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mockup",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8899", "--directory", "."],
+      "port": 8899
+    },
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["pi/airzone_dashboard.py", "--port", "5050", "--host", "127.0.0.1"],
+      "port": 5050
+    }
+  ]
+}

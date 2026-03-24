@@ -218,10 +218,14 @@ def main():
         outdoor_temp = None
         outdoor_dew_point = None
         outdoor_humidity = None
+        outdoor_wind_speed = None
+        outdoor_wind_dir = None
+        outdoor_rain = None
+        outdoor_solar = None
         try:
             zones = api.get_all_zones()
             if zones:
-                # Fetch weather for outdoor temp + dew point + humidity
+                # Fetch weather for outdoor data
                 if cfg.get("weather_optimization", False):
                     try:
                         from airzone_weather import (
@@ -237,13 +241,25 @@ def main():
                             "current_outdoor_dew_point")
                         outdoor_humidity = weather_info.get(
                             "current_outdoor_humidity")
+                        outdoor_wind_speed = weather_info.get(
+                            "current_outdoor_wind_speed")
+                        outdoor_wind_dir = weather_info.get(
+                            "current_outdoor_wind_dir")
+                        outdoor_rain = weather_info.get(
+                            "current_outdoor_rain")
+                        outdoor_solar = weather_info.get(
+                            "current_outdoor_solar")
                     except Exception as e:
                         log.error("Weather fetch failed: %s — proceeding without", e)
 
                 # Log readings to history DB
                 db.log_readings(zones, outdoor_temp,
                                 outdoor_dew_point=outdoor_dew_point,
-                                outdoor_humidity=outdoor_humidity)
+                                outdoor_humidity=outdoor_humidity,
+                                outdoor_wind_speed=outdoor_wind_speed,
+                                outdoor_wind_dir=outdoor_wind_dir,
+                                outdoor_rain=outdoor_rain,
+                                outdoor_solar=outdoor_solar)
                 log.info("Logged readings for %d zone(s) to history DB", len(zones))
             else:
                 log.warning("No zones returned from API")
@@ -574,20 +590,6 @@ def main():
                     _ctrl.save_state(state)
             except Exception as e:
                 log.error("Baseline learning error: %s", e)
-
-        # 9. Optional Supabase sync (every poll cycle if enabled)
-        if cfg.get("supabase_sync", False):
-            try:
-                from airzone_supabase import SupabaseSync
-                sync = SupabaseSync(db.conn)
-                if sync.enabled:
-                    summary = sync.run_full_sync()
-                    total_synced = sum(v for k, v in summary.items()
-                                       if isinstance(v, int))
-                    if total_synced > 0:
-                        log.info("Supabase sync: %d entries", total_synced)
-            except Exception as e:
-                log.error("Supabase sync error: %s", e)
 
         if args.once:
             break

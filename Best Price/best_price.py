@@ -2,8 +2,8 @@
 """
 best_price.py - Find the cheapest EDF electricity offer based on your Linky data.
 
-Single self-contained script. On first run it prompts for your credentials
-and stores them securely in ~/.config/best_price/config.json.
+Reads LINKY_TOKEN and LINKY_PRM from the project .env file (../airzone/.env).
+Additional settings (kVA, HC schedule) can be passed as CLI args or default to 9kVA / 22h-6h.
 
 Requires: pip install requests
 
@@ -11,7 +11,6 @@ Usage:
   python best_price.py              # Full analysis (half-hourly data, 5 years)
   python best_price.py --quick      # Quick mode (daily data only, faster)
   python best_price.py --years 3    # Only 3 years of data
-  python best_price.py --reconfigure# Re-enter credentials
   python best_price.py --csv data.csv  # Use Enedis CSV export instead of API
 """
 
@@ -19,12 +18,10 @@ import argparse
 import json
 import os
 import re
-import stat
 import sys
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from getpass import getpass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -36,79 +33,52 @@ except ImportError:
     HAS_REQUESTS = False
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION STORAGE (~/.config/best_price/)
+# CONFIGURATION — reads from project .env (same as airzone_secrets)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CONFIG_DIR = Path.home() / ".config" / "best_price"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-CACHE_DIR = CONFIG_DIR / "cache"
+SCRIPT_DIR = Path(__file__).parent
+CACHE_DIR = SCRIPT_DIR / "cache"
+
+# Walk up to find the project root .env (where LINKY_TOKEN lives)
+def _find_project_env() -> Path:
+    d = SCRIPT_DIR.resolve()
+    for _ in range(5):
+        candidate = d / ".env"
+        if candidate.exists():
+            return candidate
+        d = d.parent
+    return SCRIPT_DIR / ".env"  # fallback
+
+PROJECT_ENV = _find_project_env()
+
+
+def _parse_env(path: Path) -> dict:
+    """Parse a .env file into a flat dict."""
+    data = {}
+    if not path.exists():
+        return data
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if value:
+                data[key] = value
+    return data
 
 
 def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    return {}
-
-
-def save_config(config: dict):
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
-    # Restrict permissions to owner only (600)
-    os.chmod(CONFIG_FILE, stat.S_IRUSR | stat.S_IWUSR)
-
-
-def interactive_setup(existing: dict = None) -> dict:
-    """Prompt user for credentials and settings."""
-    config = existing or {}
-    print("\n  ┌─────────────────────────────────────────┐")
-    print("  │         CONFIGURATION                   │")
-    print("  └─────────────────────────────────────────┘")
-    print()
-    print("  Get your token at: https://conso.boris.sh/token")
-    print("  Find your PRM on your Linky (press +) or on your Enedis account.")
-    print()
-
-    token = input(f"  Conso API Bearer token [{_mask(config.get('token', ''))}]: ").strip()
-    if token:
-        config["token"] = token
-
-    prm = input(f"  PRM (14 digits) [{config.get('prm', '')}]: ").strip()
-    if prm:
-        config["prm"] = prm
-
-    kva_default = config.get("kva", 9)
-    kva = input(f"  Subscribed power in kVA [{kva_default}]: ").strip()
-    config["kva"] = int(kva) if kva else kva_default
-
-    hc_default = config.get("hc_schedule", "22-6")
-    hc = input(f"  Heures Creuses schedule (e.g. 22-6, 23-7) [{hc_default}]: ").strip()
-    config["hc_schedule"] = hc if hc else hc_default
-
-    print()
-    print("  Optional: RTE API credentials for accurate Tempo day colors.")
-    print("  Register at https://data.rte-france.com/ (leave blank to skip)")
-    rte_id = input(f"  RTE Client ID [{config.get('rte_client_id', '')}]: ").strip()
-    if rte_id:
-        config["rte_client_id"] = rte_id
-    rte_secret = input(f"  RTE Client Secret [{_mask(config.get('rte_client_secret', ''))}]: ").strip()
-    if rte_secret:
-        config["rte_client_secret"] = rte_secret
-
-    save_config(config)
-    print(f"\n  Configuration saved to {CONFIG_FILE}")
-    print(f"  (permissions: owner read/write only)\n")
-    return config
-
-
-def _mask(s: str) -> str:
-    if not s:
-        return ""
-    if len(s) <= 8:
-        return "****"
-    return s[:4] + "..." + s[-4:]
-
+    """Load Linky credentials from the project .env file."""
+    env = _parse_env(PROJECT_ENV)
+    return {
+        "token": env.get("LINKY_TOKEN", ""),
+        "prm": env.get("LINKY_PRM", ""),
+        "rte_client_id": env.get("RTE_CLIENT_ID", ""),
+        "rte_client_secret": env.get("RTE_CLIENT_SECRET", ""),
+    }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRICE DATA — All EDF offers, TTC, applicable 1er février 2026
@@ -184,7 +154,8 @@ API_BASE = "https://conso.boris.sh/api"
 DELAY = 0.6  # conservative shared rate-limit
 
 
-def _api(endpoint: str, token: str, prm: str, start: str, end: str) -> Optional[dict]:
+def _api(endpoint: str, token: str, prm: str, start: str, end: str) -> Optional[list]:
+    """Call conso.boris.sh API. Returns list of interval_reading dicts or None."""
     r = requests.get(
         f"{API_BASE}/{endpoint}",
         headers={"Authorization": f"Bearer {token}", "User-Agent": "best-price/1.0"},
@@ -192,7 +163,11 @@ def _api(endpoint: str, token: str, prm: str, start: str, end: str) -> Optional[
         timeout=30,
     )
     if r.status_code == 200:
-        return r.json()
+        data = r.json()
+        # Response may be flat or nested under meter_reading
+        if "meter_reading" in data:
+            return data["meter_reading"].get("interval_reading", [])
+        return data.get("interval_reading", [])
     if r.status_code != 404:
         print(f"    API {r.status_code}: {r.text[:120]}", file=sys.stderr)
     return None
@@ -211,9 +186,9 @@ def fetch_load_curve(token: str, prm: str, start_d: date, end_d: date, cache: bo
     done = 0
     while cur < end_d:
         nxt = min(cur + timedelta(days=7), end_d)
-        data = _api("consumption_load_curve", token, prm, cur.isoformat(), nxt.isoformat())
-        if data and "meter_reading" in data:
-            readings.extend(data["meter_reading"].get("interval_reading", []))
+        intervals = _api("consumption_load_curve", token, prm, cur.isoformat(), nxt.isoformat())
+        if intervals:
+            readings.extend(intervals)
         done += (nxt - cur).days
         print(f"\r    Half-hourly: {done}/{total} days ({done*100//total}%)", end="", flush=True)
         cur = nxt
@@ -236,9 +211,9 @@ def fetch_daily(token: str, prm: str, start_d: date, end_d: date, cache: bool) -
     cur = start_d
     while cur < end_d:
         nxt = min(cur + timedelta(days=365), end_d)
-        data = _api("daily_consumption", token, prm, cur.isoformat(), nxt.isoformat())
-        if data and "meter_reading" in data:
-            readings.extend(data["meter_reading"].get("interval_reading", []))
+        intervals = _api("daily_consumption", token, prm, cur.isoformat(), nxt.isoformat())
+        if intervals:
+            readings.extend(intervals)
         cur = nxt
         time.sleep(DELAY)
 
@@ -525,8 +500,12 @@ def analyze_curve(readings: List[dict], hc_s: int, hc_e: int,
     return b
 
 
-def analyze_daily(readings: List[dict], hc_ratio: float = 0.40) -> Breakdown:
+def analyze_daily(readings: List[dict], hc_ratio: float = 0.26,
+                   tempo: Dict[date, str] = None,
+                   ecowatt: Dict[date, str] = None) -> Breakdown:
     b = Breakdown()
+    tempo = tempo or {}
+    ecowatt = ecowatt or {}
     for r in readings:
         dt = _parse_dt(r["date"])
         if dt is None:
@@ -562,6 +541,16 @@ def analyze_daily(readings: List[dict], hc_ratio: float = 0.40) -> Breakdown:
             b.day_kwh[wd] += kwh
             b.day_hc[wd] += hc_kwh
             b.day_hp[wd] += hp_kwh
+
+        # Tempo (estimated HP/HC split per day)
+        tc = tempo.get(d, "bleu")
+        b.tempo[f"{tc}_hp"] += hp_kwh
+        b.tempo[f"{tc}_hc"] += hc_kwh
+
+        # Ecowatt / Flex
+        ec = ecowatt.get(d, "eco")
+        b.flex[f"{ec}_hp"] += hp_kwh
+        b.flex[f"{ec}_hc"] += hc_kwh
 
     if b.start and b.end:
         b.n_days = (b.end - b.start).days + 1
@@ -722,35 +711,63 @@ def show_results(results: List[dict], kva: int):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# INVOICE COMPARISON (real EDF bills from /Contis/Administration/EDF/)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Historical EDF invoices — consumption and total TTC amounts
+INVOICES = [
+    {"period": "Jan 2025 → Jan 2026", "kwh": 2385, "total_ttc": 697.34, "tariff": "Bleu Base 9kVA"},
+    {"period": "Jan 2024 → Jan 2025", "kwh": 2512, "total_ttc": 821.76, "tariff": "Bleu Base 9kVA"},
+    {"period": "Sep 2023 → Jan 2024", "kwh":  661, "total_ttc": 340.46, "tariff": "Bleu Base 9kVA", "partial": True},
+    {"period": "Jan 2022 → Jan 2023", "kwh": 1053, "total_ttc": 264.94, "tariff": "Bleu Base 9kVA", "partial": True},
+]
+
+
+def show_invoice_comparison(results: List[dict]):
+    print("\n  ── INVOICE HISTORY (actual EDF bills) ──\n")
+    best = results[0] if results else None
+    for inv in INVOICES:
+        partial = inv.get("partial", False)
+        label = " (partial)" if partial else ""
+        print(f"    {inv['period']}{label}:  {inv['kwh']:,} kWh  →  {inv['total_ttc']:,.2f}€ TTC  ({inv['tariff']})")
+    if best:
+        # Full-year invoices for comparison
+        full = [i for i in INVOICES if not i.get("partial")]
+        if full:
+            avg_kwh = sum(i["kwh"] for i in full) / len(full)
+            avg_paid = sum(i["total_ttc"] for i in full) / len(full)
+            print(f"\n    Average (full years):  {avg_kwh:,.0f} kWh/yr  →  {avg_paid:,.2f}€/yr")
+            print(f"    Best offer today:     {best['name']}  →  {best['total']:,.2f}€/yr")
+            print(f"    vs your average bill: {best['total'] - avg_paid:+,.2f}€/yr")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Find the cheapest EDF electricity offer from your Linky data.")
     ap.add_argument("--csv", help="Path to Enedis CSV export (instead of API)")
-    ap.add_argument("--kva", type=int, help="Override subscribed power (kVA)")
-    ap.add_argument("--hc-start", type=int, help="Override HC start hour (e.g. 22)")
-    ap.add_argument("--hc-end", type=int, help="Override HC end hour (e.g. 6)")
+    ap.add_argument("--kva", type=int, default=9, help="Subscribed power in kVA (default: 9)")
+    ap.add_argument("--hc-start", type=int, default=22, help="HC start hour (default: 22)")
+    ap.add_argument("--hc-end", type=int, default=6, help="HC end hour (default: 6)")
     ap.add_argument("--years", type=int, default=5, help="Years of history (default: 5)")
+    ap.add_argument("--hc-ratio", type=float, default=0.26,
+                    help="HC share of consumption for daily mode (default: 0.26 from invoice data)")
     ap.add_argument("--quick", action="store_true", help="Daily data only (faster, less accurate)")
     ap.add_argument("--no-cache", action="store_true", help="Ignore cached data")
-    ap.add_argument("--reconfigure", action="store_true", help="Re-enter credentials")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
 
-    # ── config ──
+    # ── config: read LINKY_TOKEN + LINKY_PRM from project .env ──
     config = load_config()
-    if args.reconfigure or (not args.csv and (not config.get("token") or not config.get("prm"))):
-        config = interactive_setup(config)
-
-    kva = args.kva or config.get("kva", 9)
-    hc_str = config.get("hc_schedule", "22-6")
-    parts = hc_str.split("-")
-    hc_s = args.hc_start if args.hc_start is not None else int(parts[0])
-    hc_e = args.hc_end if args.hc_end is not None else int(parts[1])
+    kva = args.kva
+    hc_s = args.hc_start
+    hc_e = args.hc_end
+    hc_ratio = args.hc_ratio
     rte_id = config.get("rte_client_id", "")
     rte_sec = config.get("rte_client_secret", "")
     use_cache = not args.no_cache
@@ -760,6 +777,7 @@ def main():
     print("  ║   BEST PRICE — EDF Electricity Offer Comparator  ║")
     print("  ╚═══════════════════════════════════════════════════╝")
     print(f"    Power: {kva} kVA   HC: {hc_s}h–{hc_e}h")
+    print(f"    Credentials: {PROJECT_ENV}")
 
     breakdown = None
     dtype = "load_curve"
@@ -778,8 +796,13 @@ def main():
             eco = estimate_ecowatt(sd, ed)
             breakdown = analyze_curve(readings, hc_s, hc_e, tempo, eco)
         else:
-            breakdown = analyze_daily(readings)
-            print("\n    Note: daily data only — HC/HP split estimated at 40/60%.")
+            dates = [_parse_dt(r["date"]).date() for r in readings if _parse_dt(r["date"])]
+            sd, ed = min(dates), max(dates)
+            tempo = load_tempo(sd, ed, rte_id, rte_sec)
+            eco = estimate_ecowatt(sd, ed)
+            breakdown = analyze_daily(readings, hc_ratio=hc_ratio, tempo=tempo, ecowatt=eco)
+            hc_pct = int(hc_ratio * 100)
+            print(f"\n    Note: daily data only — HC/HP split estimated at {hc_pct}/{100-hc_pct}%.")
 
     # ── API mode ──
     else:
@@ -788,7 +811,7 @@ def main():
         token = config.get("token", "")
         prm = config.get("prm", "")
         if not token or not prm:
-            sys.exit("Run with --reconfigure to set credentials")
+            sys.exit(f"LINKY_TOKEN and LINKY_PRM not found in {PROJECT_ENV}")
 
         print(f"    PRM: {prm[:4]}...{prm[-4:]}   Source: conso.boris.sh")
         end_d = date.today() - timedelta(days=1)
@@ -799,9 +822,15 @@ def main():
             daily = fetch_daily(token, prm, start_d, end_d, use_cache)
             if not daily:
                 sys.exit("No daily data from API")
-            breakdown = analyze_daily(daily)
+            dates = [_parse_dt(r["date"]).date() for r in daily if _parse_dt(r["date"])]
+            sd, ed = min(dates), max(dates)
+            print("  Loading Tempo colours...")
+            tempo = load_tempo(sd, ed, rte_id, rte_sec)
+            eco = estimate_ecowatt(sd, ed)
+            breakdown = analyze_daily(daily, hc_ratio=hc_ratio, tempo=tempo, ecowatt=eco)
             dtype = "daily"
-            print("    Note: daily data only — HC/HP split estimated at 40/60%.")
+            hc_pct = int(hc_ratio * 100)
+            print(f"    Note: daily data only — HC/HP split estimated at {hc_pct}/{100-hc_pct}%.")
         else:
             print(f"\n  Fetching half-hourly data ({args.years} years)...")
             print("    This may take a few minutes (API rate limits)...\n")
@@ -812,7 +841,11 @@ def main():
                 daily = fetch_daily(token, prm, start_d, end_d, use_cache)
                 if not daily:
                     sys.exit("No data from API")
-                breakdown = analyze_daily(daily)
+                dates = [_parse_dt(r["date"]).date() for r in daily if _parse_dt(r["date"])]
+                sd, ed = min(dates), max(dates)
+                tempo = load_tempo(sd, ed, rte_id, rte_sec)
+                eco = estimate_ecowatt(sd, ed)
+                breakdown = analyze_daily(daily, hc_ratio=hc_ratio, tempo=tempo, ecowatt=eco)
                 dtype = "daily"
             else:
                 dates = [_parse_dt(r["date"]).date() for r in readings if _parse_dt(r["date"])]
@@ -838,9 +871,14 @@ def main():
 
     show_results(results, kva)
 
+    # ── Invoice comparison ──
+    show_invoice_comparison(results)
+
     if dtype == "daily":
-        print("\n  ⚠  HC/Tempo/Weekend/Flex results are ESTIMATES (daily data only).")
-        print("     For accurate results, use half-hourly data (courbe de charge).")
+        hc_pct = int(args.hc_ratio * 100)
+        print(f"\n  ⚠  HC/Tempo/Weekend/Flex results are ESTIMATES (daily data only, {hc_pct}/{100-hc_pct}% HC/HP).")
+        print("     HC ratio based on historical invoice data (EDF 2022-23).")
+        print("     For exact results, use half-hourly data (courbe de charge).")
     print()
 
 

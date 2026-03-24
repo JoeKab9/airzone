@@ -24,8 +24,7 @@ log = logging.getLogger("airzone")
 
 def create_analytics_tables(conn: sqlite3.Connection):
     """Create analytics tables if they don't exist."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS heating_cycles (
+    conn.execute("""CREATE TABLE IF NOT EXISTS heating_cycles (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             zone_name        TEXT    NOT NULL,
             device_id        TEXT    NOT NULL DEFAULT '',
@@ -41,12 +40,9 @@ def create_analytics_tables(conn: sqlite3.Connection):
             reached_threshold INTEGER DEFAULT 0,
             rebound_rate     REAL,
             UNIQUE(zone_name, start_ts)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_cycles_zone_ts
-            ON heating_cycles(zone_name, start_ts);
-
-        CREATE TABLE IF NOT EXISTS zone_analytics (
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cycles_zone_ts ON heating_cycles(zone_name, start_ts)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS zone_analytics (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             date             TEXT    NOT NULL,
             zone_name        TEXT    NOT NULL,
@@ -59,9 +55,8 @@ def create_analytics_tables(conn: sqlite3.Connection):
             trough_humidity  INTEGER,
             avg_outdoor_temp REAL,
             UNIQUE(date, zone_name)
-        );
-
-        CREATE TABLE IF NOT EXISTS optimization_log (
+        )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS optimization_log (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp        TEXT    NOT NULL,
             metric           TEXT    NOT NULL,
@@ -70,9 +65,8 @@ def create_analytics_tables(conn: sqlite3.Connection):
             confidence       REAL,
             reasoning        TEXT,
             applied          INTEGER DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS control_decisions (
+        )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS control_decisions (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp        TEXT    NOT NULL,
             zone_name        TEXT    NOT NULL,
@@ -88,10 +82,9 @@ def create_analytics_tables(conn: sqlite3.Connection):
             action           TEXT NOT NULL,
             reason           TEXT,
             dew_point_decision TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_decisions_zone_ts
-            ON control_decisions(zone_name, timestamp);
-    """)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_decisions_zone_ts ON control_decisions(zone_name, timestamp)")
+    conn.commit()
 
 
 def log_control_decision(conn: sqlite3.Connection, zone_name: str,

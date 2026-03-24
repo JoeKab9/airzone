@@ -39,19 +39,15 @@ CONSO_API_BASE = "https://conso.boris.sh/api"
 
 def create_linky_tables(conn: sqlite3.Connection):
     """Create Linky energy tables if they don't exist."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS linky_readings (
+    conn.execute("""CREATE TABLE IF NOT EXISTS linky_readings (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT    NOT NULL,
             wh        REAL    NOT NULL,
             source    TEXT    DEFAULT 'load_curve',
             UNIQUE(timestamp)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_linky_ts
-            ON linky_readings(timestamp);
-
-        CREATE TABLE IF NOT EXISTS energy_analysis (
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_linky_ts ON linky_readings(timestamp)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS energy_analysis (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             date                TEXT    NOT NULL,
             total_kwh           REAL,
@@ -62,11 +58,14 @@ def create_linky_tables(conn: sqlite3.Connection):
             kwh_per_heating_hr  REAL,
             outdoor_temp_band   TEXT,
             UNIQUE(date)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_energy_date
-            ON energy_analysis(date);
-    """)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_energy_date ON energy_analysis(date)")
+    # Migrate: add hot_water_kwh column if missing
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(energy_analysis)").fetchall()}
+    if "hot_water_kwh" not in cols:
+        conn.execute(
+            "ALTER TABLE energy_analysis ADD COLUMN hot_water_kwh REAL")
     conn.commit()
 
 
@@ -327,32 +326,38 @@ def analyze_energy(conn: sqlite3.Connection, day: date) -> dict | None:
     if not linky_by_slot:
         return None
 
-    # Get heating states
+    # Get heating states (zone power=1)
     heating_slots = _get_heating_state_for_slots(conn, day)
 
-    # Split into idle and heating
+    # Classify each slot: idle / heating / hot_water
     idle_wh = []
     heating_wh = []
+    hot_water_wh = []
     total_wh = 0
+
+    # Compute base threshold: 30th percentile of all readings ≈ true idle
+    all_wh = sorted(linky_by_slot.values())
+    base_per_slot = all_wh[int(len(all_wh) * 0.3)] if all_wh else 0
 
     for slot_key, wh in linky_by_slot.items():
         total_wh += wh
         is_heating = heating_slots.get(slot_key, False)
+        above_base = max(0, wh - base_per_slot)
+
         if is_heating:
-            heating_wh.append(wh)
+            # Zone(s) actively heating → HP Heating
+            heating_wh.append(above_base)
+        elif above_base > base_per_slot * 0.5:
+            # No zone heating but significant consumption spike → HP Hot Water
+            # (hot water cylinder reheating via heat pump)
+            hot_water_wh.append(above_base)
         else:
             idle_wh.append(wh)
 
-    # Base consumption = median of idle slots
-    if idle_wh:
-        base_per_slot = statistics.median(idle_wh)
-    else:
-        # All slots had heating — use minimum as rough base estimate
-        base_per_slot = min(linky_by_slot.values()) if linky_by_slot else 0
-
-    # Heat pump consumption
-    heatpump_total_wh = sum(max(0, wh - base_per_slot) for wh in heating_wh)
-    heating_hours = len(heating_wh) * 0.5  # Each slot = 30 min
+    # Totals
+    heatpump_total_wh = sum(heating_wh)
+    hot_water_total_wh = sum(hot_water_wh)
+    heating_hours = sum(1 for s in heating_slots.values() if s) * 0.5
     base_total_wh = base_per_slot * len(linky_by_slot)
 
     # Outdoor temperature
@@ -368,6 +373,7 @@ def analyze_energy(conn: sqlite3.Connection, day: date) -> dict | None:
         "total_kwh": round(total_wh / 1000, 2),
         "base_kwh": round(base_total_wh / 1000, 2),
         "heatpump_kwh": round(heatpump_total_wh / 1000, 2),
+        "hot_water_kwh": round(hot_water_total_wh / 1000, 2),
         "heating_hours": round(heating_hours, 1),
         "avg_outdoor_temp": round(avg_outdoor, 1) if avg_outdoor else None,
         "kwh_per_heating_hr": round(kwh_per_hr, 2) if kwh_per_hr else None,
@@ -409,18 +415,25 @@ def run_energy_analysis(conn: sqlite3.Connection,
 
         conn.execute(
             "INSERT OR REPLACE INTO energy_analysis "
-            "(date, total_kwh, base_kwh, heatpump_kwh, heating_hours, "
-            " avg_outdoor_temp, kwh_per_heating_hr, outdoor_temp_band) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(date, total_kwh, base_kwh, heatpump_kwh, hot_water_kwh, "
+            " heating_hours, avg_outdoor_temp, kwh_per_heating_hr, "
+            " outdoor_temp_band) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (result["date"], result["total_kwh"], result["base_kwh"],
-             result["heatpump_kwh"], result["heating_hours"],
-             result["avg_outdoor_temp"], result["kwh_per_heating_hr"],
-             result["outdoor_temp_band"]),
+             result["heatpump_kwh"], result["hot_water_kwh"],
+             result["heating_hours"], result["avg_outdoor_temp"],
+             result["kwh_per_heating_hr"], result["outdoor_temp_band"]),
         )
         analyzed += 1
 
     conn.commit()
     log.info("Linky: analyzed energy for %d/%d days", analyzed, len(rows))
+
+    # Re-learn COP model if we have enough data (runs weekly or on demand)
+    try:
+        learn_cop_model(conn, hp_kw=2.5, min_days=30)
+    except Exception as e:
+        log.debug("COP learning skipped: %s", e)
 
     # Build summary
     return _build_energy_summary(conn, days)
@@ -433,15 +446,17 @@ def _build_energy_summary(conn: sqlite3.Connection,
 
     # Daily stats
     daily = conn.execute(
-        "SELECT date, total_kwh, base_kwh, heatpump_kwh, heating_hours, "
-        "       avg_outdoor_temp, kwh_per_heating_hr, outdoor_temp_band "
+        "SELECT date, total_kwh, base_kwh, heatpump_kwh, hot_water_kwh, "
+        "       heating_hours, avg_outdoor_temp, kwh_per_heating_hr, "
+        "       outdoor_temp_band "
         "FROM energy_analysis WHERE date >= ? ORDER BY date DESC",
         (cutoff,)
     ).fetchall()
 
     daily_stats = [dict(zip(
-        ["date", "total_kwh", "base_kwh", "heatpump_kwh", "heating_hours",
-         "avg_outdoor_temp", "kwh_per_heating_hr", "outdoor_temp_band"], r))
+        ["date", "total_kwh", "base_kwh", "heatpump_kwh", "hot_water_kwh",
+         "heating_hours", "avg_outdoor_temp", "kwh_per_heating_hr",
+         "outdoor_temp_band"], r))
         for r in daily]
 
     # Temperature band efficiency
@@ -522,6 +537,98 @@ def compute_savings(conn: sqlite3.Connection, days: int = 30) -> dict | None:
             f"vs {avg_cold:.2f} kWh/h when \u226410\u00b0C "
             f"({savings_pct}% less energy)"
         ),
+    }
+
+
+# ── COP Self-Learning ────────────────────────────────────────────────────────
+
+def learn_cop_model(conn: sqlite3.Connection,
+                    hp_kw: float = 2.5,
+                    min_days: int = 30) -> dict | None:
+    """
+    Learn COP = intercept + slope × T_outdoor from energy_analysis data.
+
+    For each day with heating:
+      - electricity_hp = heatpump_kwh (Linky-measured HP consumption)
+      - heat_delivered ≈ heatpump_kwh × COP (we solve for COP)
+      - kwh_per_heating_hr gives us the electrical input rate
+      - COP ≈ hp_kw / kwh_per_heating_hr (ratio of nominal to actual)
+
+    We then regress COP against avg_outdoor_temp.
+    Returns learned model or None if insufficient data.
+    """
+    rows = conn.execute(
+        "SELECT avg_outdoor_temp, kwh_per_heating_hr, heating_hours "
+        "FROM energy_analysis "
+        "WHERE avg_outdoor_temp IS NOT NULL "
+        "  AND kwh_per_heating_hr IS NOT NULL "
+        "  AND kwh_per_heating_hr > 0 "
+        "  AND heating_hours >= 1"
+    ).fetchall()
+
+    if len(rows) < min_days:
+        return None
+
+    # Compute observed COP for each day
+    # COP ≈ nominal_hp_kw / actual_kwh_per_heating_hr
+    # (higher COP = less electricity per hour of heating)
+    points = []
+    for temp, kwh_hr, hours in rows:
+        if kwh_hr > 0:
+            observed_cop = hp_kw / kwh_hr
+            # Sanity check: COP should be between 1 and 8
+            if 1.0 <= observed_cop <= 8.0:
+                points.append((temp, observed_cop))
+
+    if len(points) < 20:
+        return None
+
+    # Simple linear regression: COP = a + b × T_outdoor
+    n = len(points)
+    sum_x = sum(p[0] for p in points)
+    sum_y = sum(p[1] for p in points)
+    sum_xy = sum(p[0] * p[1] for p in points)
+    sum_x2 = sum(p[0] ** 2 for p in points)
+
+    denom = n * sum_x2 - sum_x ** 2
+    if abs(denom) < 1e-10:
+        return None
+
+    slope = (n * sum_xy - sum_x * sum_y) / denom
+    intercept = (sum_y - slope * sum_x) / n
+
+    # R² calculation
+    mean_y = sum_y / n
+    ss_tot = sum((p[1] - mean_y) ** 2 for p in points)
+    ss_res = sum((p[1] - (intercept + slope * p[0])) ** 2 for p in points)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    # Only store if quality is acceptable
+    if r_squared < 0.3:
+        log.info("COP model R²=%.2f too low (n=%d), keeping defaults", r_squared, n)
+        return None
+
+    # Store in cop_model table
+    try:
+        conn.execute(
+            "INSERT INTO cop_model (intercept, slope, r_squared, n_samples, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (round(intercept, 4), round(slope, 4), round(r_squared, 4), n, now))
+        conn.commit()
+    except Exception:
+        pass  # Table may not exist in older DBs
+
+    log.info("COP model learned: COP = %.2f + %.3f × Tout (R²=%.2f, n=%d)",
+             intercept, slope, r_squared, n)
+
+    return {
+        "intercept": round(intercept, 4),
+        "slope": round(slope, 4),
+        "r_squared": round(r_squared, 4),
+        "n_samples": n,
+        "updated_at": now,
     }
 
 
@@ -744,14 +851,73 @@ def import_enedis_file(conn: sqlite3.Connection, filepath: str) -> dict:
 
 def get_energy_readings(conn: sqlite3.Connection,
                         hours: int = 168) -> list[dict]:
-    """Get raw Linky readings for chart display."""
+    """Get raw Linky readings for chart display, with zone heating state."""
     cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat() + "Z"
     rows = conn.execute(
         "SELECT timestamp, wh FROM linky_readings "
         "WHERE timestamp >= ? ORDER BY timestamp",
         (cutoff,)
     ).fetchall()
-    return [{"timestamp": r[0], "wh": r[1]} for r in rows]
+
+    # Build a set of (date, slot) where any zone had heating ON
+    heating_set = set()
+    zone_rows = conn.execute(
+        "SELECT timestamp, power FROM zone_readings "
+        "WHERE timestamp >= ? AND power = 1",
+        (cutoff,)
+    ).fetchall()
+    for zr in zone_rows:
+        ts_str = zr[0] if isinstance(zr[0], str) else str(zr[0])
+        try:
+            # Parse to date + slot key
+            if "T" in ts_str:
+                dt_part, time_part = ts_str.split("T")
+            elif " " in ts_str:
+                dt_part, time_part = ts_str.split(" ", 1)
+            else:
+                continue
+            h = int(time_part[:2])
+            m = int(time_part[3:5])
+            slot_m = 0 if m < 30 else 30
+            heating_set.add((dt_part, f"{h:02d}:{slot_m:02d}"))
+        except (ValueError, IndexError):
+            continue
+
+    results = []
+    for r in rows:
+        ts = r[0]
+        ts_str = ts if isinstance(ts, str) else str(ts)
+        heating = False
+        try:
+            if "T" in ts_str:
+                dt_part, time_part = ts_str.split("T")
+            elif " " in ts_str:
+                dt_part, time_part = ts_str.split(" ", 1)
+            else:
+                dt_part, time_part = "", ""
+            h = int(time_part[:2])
+            m = int(time_part[3:5])
+            # Linky timestamps mark END of interval, shift back
+            if m == 0 and h > 0:
+                slot_key = f"{h-1:02d}:30"
+            elif m == 0 and h == 0:
+                slot_key = "23:30"
+                # previous day
+                try:
+                    d = date.fromisoformat(dt_part) - timedelta(days=1)
+                    dt_part = str(d)
+                except ValueError:
+                    pass
+            elif m == 30:
+                slot_key = f"{h:02d}:00"
+            else:
+                slot_key = f"{h:02d}:{0 if m < 30 else 30:02d}"
+            heating = (dt_part, slot_key) in heating_set
+        except (ValueError, IndexError):
+            pass
+        results.append({"timestamp": ts, "wh": r[1], "heating": heating})
+
+    return results
 
 
 def get_energy_analysis(conn: sqlite3.Connection,
@@ -759,14 +925,16 @@ def get_energy_analysis(conn: sqlite3.Connection,
     """Get daily energy analysis for display."""
     cutoff = str(date.today() - timedelta(days=days))
     rows = conn.execute(
-        "SELECT date, total_kwh, base_kwh, heatpump_kwh, heating_hours, "
-        "       avg_outdoor_temp, kwh_per_heating_hr, outdoor_temp_band "
+        "SELECT date, total_kwh, base_kwh, heatpump_kwh, hot_water_kwh, "
+        "       heating_hours, avg_outdoor_temp, kwh_per_heating_hr, "
+        "       outdoor_temp_band "
         "FROM energy_analysis WHERE date >= ? ORDER BY date DESC",
         (cutoff,)
     ).fetchall()
     return [dict(zip(
-        ["date", "total_kwh", "base_kwh", "heatpump_kwh", "heating_hours",
-         "avg_outdoor_temp", "kwh_per_heating_hr", "outdoor_temp_band"], r))
+        ["date", "total_kwh", "base_kwh", "heatpump_kwh", "hot_water_kwh",
+         "heating_hours", "avg_outdoor_temp", "kwh_per_heating_hr",
+         "outdoor_temp_band"], r))
         for r in rows]
 
 
