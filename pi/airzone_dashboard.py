@@ -54,22 +54,98 @@ _shared_db = None
 _shared_db_lock = threading.Lock()
 
 
-def get_db() -> HistoryDB:
-    """Return a shared HistoryDB instance (thread-safe via WAL mode)."""
+def _try_init_db():
+    """Try to create a HistoryDB (with schema init). Non-blocking."""
     global _shared_db
-    if _shared_db is None:
-        with _shared_db_lock:
-            if _shared_db is None:
-                _shared_db = HistoryDB(DB_PATH)
-    return _shared_db
+    try:
+        _shared_db = HistoryDB(DB_PATH)
+    except Exception:
+        pass  # Schema init failed (DB locked) — will use raw conn
 
 
-def get_raw_conn():
-    """Return a lightweight read-only SQLite connection (no schema init)."""
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+def get_db():
+    """Return HistoryDB if available, otherwise a lightweight wrapper."""
+    if _shared_db is not None:
+        return _shared_db
+    # Try once in background
+    with _shared_db_lock:
+        if _shared_db is None:
+            threading.Thread(target=_try_init_db, daemon=True).start()
+    # Return a lightweight read-only proxy
+    return _ReadOnlyDB(DB_PATH)
+
+
+class _ReadOnlyDB:
+    """Lightweight read-only DB wrapper matching HistoryDB interface for queries."""
+    def __init__(self, path):
+        self.conn = sqlite3.connect(str(path), timeout=5)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout=3000")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.db_path = path
+
+    def get_stats(self):
+        import os
+        c = self.conn
+        total = c.execute("SELECT COUNT(*) FROM zone_readings").fetchone()[0]
+        first = c.execute("SELECT MIN(timestamp) FROM zone_readings").fetchone()[0]
+        last = c.execute("SELECT MAX(timestamp) FROM zone_readings").fetchone()[0]
+        db_size = os.path.getsize(self.db_path) if self.db_path.exists() else 0
+        return {"total_readings": total, "first_reading": first, "last_reading": last,
+                "db_size_mb": round(db_size / (1024 * 1024), 2)}
+
+    def get_zone_names(self):
+        return [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT zone_name FROM zone_readings ORDER BY zone_name").fetchall()]
+
+    def get_latest(self):
+        rows = self.conn.execute("""
+            SELECT z.* FROM zone_readings z
+            INNER JOIN (SELECT zone_name, MAX(timestamp) as max_ts
+                        FROM zone_readings WHERE zone_name IS NOT NULL GROUP BY zone_name
+            ) latest ON z.zone_name = latest.zone_name AND z.timestamp = latest.max_ts
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_readings(self, zone=None, hours=24):
+        if zone:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM zone_readings WHERE zone_name=? AND timestamp > datetime('now', ? || ' hours') ORDER BY timestamp",
+                (zone, f"-{hours}")).fetchall()]
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM zone_readings WHERE timestamp > datetime('now', ? || ' hours') ORDER BY timestamp",
+            (f"-{hours}",)).fetchall()]
+
+    def get_actions(self, hours=24):
+        try:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM control_actions WHERE timestamp > datetime('now', ? || ' hours') ORDER BY timestamp DESC",
+                (f"-{hours}",)).fetchall()]
+        except Exception:
+            return []
+
+    def get_zone_profiles(self): return []
+    def get_heating_cycles(self, **kw): return []
+    def get_warm_hours_recommendation(self, *a, **kw): return {}
+    def get_optimization_log(self, **kw): return []
+    def get_energy_readings(self, **kw):
+        try:
+            hours = kw.get("hours", 168)
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM linky_readings WHERE timestamp > datetime('now', ? || ' hours') ORDER BY timestamp",
+                (f"-{hours}",)).fetchall()]
+        except Exception:
+            return []
+    def get_energy_analysis(self, **kw): return []
+    def get_temp_band_efficiency(self, **kw): return []
+    def log_readings(self, *a, **kw): pass
+    def log_linky_readings(self, *a, **kw): pass
+    def get_tariff_periods(self): return []
+    def add_tariff_period(self, *a, **kw): return 0
+    def delete_tariff_period(self, *a, **kw): pass
+
+    def close(self):
+        self.conn.close()
 
 
 # ── Background poller ────────────────────────────────────────────────────────
