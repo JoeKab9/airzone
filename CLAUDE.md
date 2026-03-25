@@ -57,7 +57,7 @@ airzone/
 |-------|-------|
 | IP | 65.108.147.47 |
 | Path | `/opt/airzone/` |
-| URL | http://65.108.147.47/airzone/ |
+| URL | https://gazpacho.cc/airzone/ |
 | Auth | admin / 2183 |
 | SSH | `ssh -i ~/.ssh/id_ed25519_hetzner root@65.108.147.47` |
 
