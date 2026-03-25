@@ -1,6 +1,6 @@
 # CLAUDE_RULES.md — Master Coding Contract
 
-Read this at the start of every session. Acknowledge these rules before writing any code. These rules override defaults and apply to every answer, every file, and every modification.
+Read this at the start of every session. For any work touching Hetzner, Nginx, or dashboard deployments, also read `CLAUDE_SECURITY.md`. Acknowledge these rules before writing any code. These rules override defaults and apply to every answer, every file, and every modification.
 
 ---
 
@@ -109,6 +109,8 @@ When refactoring:
 - Ensure `location` blocks do not block static files (CSS, JS, images)
 - Ensure filesystem paths in backend/Nginx match where build artifacts actually land
 - Verify proxy port matches the actual running service port before saving config
+- API routes must be registered before the SPA catch-all — any catch-all route will swallow API calls registered after it
+- When an API returns HTML instead of JSON, the first suspect is a method mismatch (GET vs POST) or a missing/misrouted endpoint — not a data problem
 
 ## 10. External APIs
 - Never guess API parameter names — confirm from docs or working calls
@@ -157,6 +159,17 @@ If not specified, treat this file as the default operating mode. Special modes:
 - **"Minimal, surgical fix"** — fix only the described bug, no refactors, smallest possible change
 - **"Refactor safely"** — improve structure, keep behavior identical, list verification checks
 - **"Production-ready"** — favor correctness, robustness, clear logging, and full deployment notes
+
+## 15. Data Files on Google Drive
+- Data files (audio, video, SQLite, CSVs, etc.) may intentionally live on Google Drive — treat the GDrive path as a legitimate data store
+- Never move, copy, or migrate these files without explicit approval
+- When writing code that accesses GDrive data:
+  - Resolve path dynamically via `os.path.expanduser("~/My Drive/...")` — never hardcode `/Users/<name>/`
+  - Guard against files not synced locally: check `os.path.exists(path)` and raise a clear `FileNotFoundError` mentioning GDrive sync if missing
+  - Never write outputs directly to a GDrive path — write to a local temp file first, then `shutil.move()` to the GDrive destination to avoid partial writes during cloud sync
+  - Never open a SQLite database on GDrive while GDrive is syncing — the WAL file may be out of sync; stop writes before syncing, resume after
+  - Never assume GDrive files are available offline — add a startup check if the script depends on them
+- These rules apply even if the GDrive path looks unconventional — do not suggest moving data to a "safer" location without being asked
 
 ---
 

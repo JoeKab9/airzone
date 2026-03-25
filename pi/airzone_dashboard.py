@@ -43,7 +43,10 @@ app = Flask(__name__,
             template_folder=str(Path(__file__).parent / "templates"),
             static_folder=str(Path(__file__).parent / "static"))
 
-DB_PATH = Path(__file__).parent / "data" / "airzone_history.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "airzone_raw.db"
+if not DB_PATH.exists():
+    # Fallback to the pi-local DB if raw DB doesn't exist
+    DB_PATH = Path(__file__).parent / "data" / "airzone_history.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -52,8 +55,21 @@ _shared_db_lock = threading.Lock()
 
 
 def get_db() -> HistoryDB:
-    """Return a fresh DB connection per call (avoids cross-thread corruption)."""
-    return HistoryDB(DB_PATH)
+    """Return a shared HistoryDB instance (thread-safe via WAL mode)."""
+    global _shared_db
+    if _shared_db is None:
+        with _shared_db_lock:
+            if _shared_db is None:
+                _shared_db = HistoryDB(DB_PATH)
+    return _shared_db
+
+
+def get_raw_conn():
+    """Return a lightweight read-only SQLite connection (no schema init)."""
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 
 # ── Background poller ────────────────────────────────────────────────────────

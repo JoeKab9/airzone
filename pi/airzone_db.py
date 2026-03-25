@@ -57,25 +57,27 @@ class HistoryDB:
             str(self.db_path), check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout=30000")
-        # Use DELETE journal mode — WAL causes disk I/O errors with
-        # concurrent SHM file access on macOS (com.apple.provenance)
+        # WAL mode for concurrent read/write access (poller + dashboard)
         try:
-            self.conn.execute("PRAGMA journal_mode=DELETE")
+            self.conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.OperationalError:
             pass
-        self._create_tables()
-        create_analytics_tables(self.conn)
-        migrate_analytics_tables(self.conn)
-        create_linky_tables(self.conn)
-        if _HAS_BRAIN:
-            create_brain_tables(self.conn)
-        if _HAS_THERMAL:
-            create_prediction_tables(self.conn)
-        if _HAS_BASELINE:
-            create_baseline_tables(self.conn)
-        self._create_cop_tables()
-        self._create_tariff_tables()
-        self._migrate()
+        try:
+            self._create_tables()
+            create_analytics_tables(self.conn)
+            migrate_analytics_tables(self.conn)
+            create_linky_tables(self.conn)
+            if _HAS_BRAIN:
+                create_brain_tables(self.conn)
+            if _HAS_THERMAL:
+                create_prediction_tables(self.conn)
+            if _HAS_BASELINE:
+                create_baseline_tables(self.conn)
+            self._create_cop_tables()
+            self._create_tariff_tables()
+            self._migrate()
+        except sqlite3.OperationalError:
+            pass  # Tables already exist or DB locked by poller
 
     def _migrate(self):
         """Add columns introduced after initial schema."""
