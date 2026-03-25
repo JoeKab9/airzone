@@ -1,3 +1,5 @@
+> ⚠️ **SESSION START — Read `CLAUDE_RULES.md` before writing any code. Acknowledge the rules before proceeding.**
+
 # Airzone — Claude Instructions
 
 Smart HVAC controller for a French property (Contis, Landes). Reads from the Airzone Cloud API, Netatmo weather station, and Linky electricity meter. Controls heating zones and domestic hot water (DHW). Includes an energy analytics module and electricity price optimiser.
