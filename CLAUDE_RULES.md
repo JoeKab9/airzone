@@ -29,16 +29,22 @@ Read this at the start of every session. For any work touching Hetzner, Nginx, o
 - Never assume repo location; avoid absolute paths
 
 ## 3. General Coding Behavior
-Top priority: correct, robust, production-ready code — never speculative or placeholder code.
+Priorities in order: 1. Correctness and robustness 2. Security and safe data handling 3. Maintainable, clear structure — even if that means going slower or writing more code.
 - At the start of any coding task, scan the current session history for decisions, features, or fixes that were discussed but not yet implemented. List any open items found and ask the user whether to proceed, defer, or drop them before writing new code.
 - Always plan before coding:
   - Summarize the task in your own words
   - List key files and modules to touch
-  - List likely failure modes (paths, ports, env vars, locks, pagination, auth, build)
+  - List likely failure modes including:
+    - Wrong assumptions about input/output formats (API, DB, file, UI)
+    - Off-by-one, edge cases (empty, null, extreme values, timezones)
+    - Concurrency/async issues (locks, race conditions, blocking I/O)
+    - Paths, build, and runtime layout mistakes
+    - Security issues (missing auth/validation, hardcoded secrets)
 - Do not start writing code until the plan is shown and confirmed
 - Prefer small, focused changes over big rewrites
 - Respect existing architecture and behavior
 - Never introduce new dependencies without explicitly stating them
+- If a request pushes toward an insecure shortcut ("skip auth", "put the key in JS"): call it out, explain the risk briefly, and propose the minimal safer alternative
 
 Output structure for each task:
 1. Goal restatement (1–3 sentences)
@@ -71,6 +77,7 @@ When refactoring:
 - Propose the refactor and wait for confirmation before writing code
 - If renaming or moving symbols: update every visible reference and list files needing search/replace
 - If there's a risk of port conflicts, stale services, or leftover processes: say exactly what to restart or stop
+- If changing an API or schema: list every place that must be updated (backend, frontend, scripts, tests) and either fix them all or flag each one explicitly
 
 ## 6. Module Systems, Builds, and Paths
 - Never mix CommonJS and ESM in the same file
@@ -101,6 +108,9 @@ When refactoring:
 - Never copy a SQLite database file while it is in use — always stop the service first, then copy, then restart
 - When moving or syncing SQLite files (e.g. via Google Drive, rsync, scp): ensure the WAL file (`.db-wal`) and shared memory file (`.db-shm`) are also copied or cleanly absent — copying only the `.db` file while WAL exists will corrupt the database
 - If corruption occurs: stop all services, run `sqlite3 <db> "PRAGMA integrity_check;"` to assess, restore from backup
+- For migrations/imports: describe how to upgrade safely and verify integrity (row counts, sample queries) — avoid patterns that recreate schemas or write concurrently in unsafe ways
+- When asked to "use existing data": design the actual migration/export/import steps — never assume data magically exists in the right place
+- For refreshable tokens or credentials: persist and reload them correctly (file or env) — never keep them only in memory across restarts
 
 ## 9. HTTP Servers, Ports, and Nginx
 - Always think through the full chain: Browser → Nginx → backend (port) → DB / API / static files
@@ -111,6 +121,8 @@ When refactoring:
 - Verify proxy port matches the actual running service port before saving config
 - API routes must be registered before the SPA catch-all — any catch-all route will swallow API calls registered after it
 - When an API returns HTML instead of JSON, the first suspect is a method mismatch (GET vs POST) or a missing/misrouted endpoint — not a data problem
+- Use parameterized queries for all DB access — never build SQL by string concatenation
+- Escape all output rendered in HTML to prevent XSS
 
 ## 10. External APIs
 - Never guess API parameter names — confirm from docs or working calls
@@ -160,7 +172,17 @@ If not specified, treat this file as the default operating mode. Special modes:
 - **"Refactor safely"** — improve structure, keep behavior identical, list verification checks
 - **"Production-ready"** — favor correctness, robustness, clear logging, and full deployment notes
 
-## 15. Data Files on Google Drive
+## 15. Data, APIs, and Schemas
+- Never code against an assumed schema or data format — ask for a real example (JSON payload, DB schema, file sample) or state your assumptions explicitly and wait for confirmation before proceeding
+- Be explicit about units and conversions — state them in code and comments (e.g. ms vs s, Pa vs kPa, 0–1 vs percentage)
+- When an API or schema changes: list every consumer that must be updated (backend, frontend, scripts, tests) and either fix them all or flag each one explicitly
+
+## 16. Testing
+- For anything non-trivial, propose small targeted tests or checks (unit tests, sample calls, CLI commands) that verify both happy path and edge cases
+- Prefer behavior-focused tests (inputs/outputs, invariants) over tests that mirror implementation details
+- Include in every task's output checklist: the specific command or check that proves the change works
+
+## 17. Data Files on Google Drive
 - Data files (audio, video, SQLite, CSVs, etc.) may intentionally live on Google Drive — treat the GDrive path as a legitimate data store
 - Never move, copy, or migrate these files without explicit approval
 - When writing code that accesses GDrive data:
