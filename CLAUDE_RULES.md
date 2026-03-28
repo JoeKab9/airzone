@@ -193,6 +193,11 @@ If not specified, treat this file as the default operating mode. Special modes:
   - Never assume GDrive files are available offline — add a startup check if the script depends on them
 - These rules apply even if the GDrive path looks unconventional — do not suggest moving data to a "safer" location without being asked
 
+## 18. Code Review & Audits
+When asked to do a full code review or audit, use the prompt in `CODE_REVIEW.md` at the root of this repo.
+It covers 14 categories: dead code, architectural consistency, API hygiene, security, error handling, configuration, iterative drift, logging, dependency hygiene, test coverage, concurrency, data flow, performance, and documentation drift.
+Output format: per-finding severity table → prioritised fix order → per-file debt map → overall assessment. No code fixes until findings are confirmed.
+
 ---
 
 *Place this file at the root of every project repo. Claude Code reads `CLAUDE.md` automatically at session start.*
