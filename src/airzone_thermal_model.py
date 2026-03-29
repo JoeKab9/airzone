@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from airzone_utils import calc_dewpoint
+
 log = logging.getLogger("airzone")
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -34,17 +36,6 @@ log = logging.getLogger("airzone")
 PREDICTION_HORIZONS = [3, 24]  # hours
 MIN_SAMPLES = 3
 CONFIDENCE_HALF_LIFE = 20  # asymptotic: confidence = 1 - e^(-samples/half_life)
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-def calc_dewpoint(temp_c: float, rh: float) -> float:
-    """Magnus-Tetens dew point from temperature (°C) and RH (%)."""
-    if rh <= 0:
-        return 0.0
-    a, b = 17.625, 243.04
-    gamma = (a * temp_c) / (b + temp_c) + math.log(max(rh, 1) / 100)
-    return (b * gamma) / (a - gamma)
 
 
 def _linear_regression(xs: list[float], ys: list[float]) -> tuple[float, float]:

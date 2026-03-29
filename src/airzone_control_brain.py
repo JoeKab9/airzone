@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional
 
+from airzone_utils import calc_dewpoint
+
 log = logging.getLogger("airzone")
 
 
@@ -59,15 +61,6 @@ NETATMO_IGNORE = {"Indoor", "Ukkel Buiten"}
 
 
 # ── Dew Point / Humidity Calculations ────────────────────────────────────────
-
-def calc_dewpoint(temp_c: float, rh: float) -> float:
-    """Magnus-Tetens formula for dew point temperature."""
-    if rh <= 0 or temp_c is None:
-        return 0.0
-    a = 17.625
-    b = 243.04
-    gamma = (a * temp_c) / (b + temp_c) + math.log(max(rh, 1) / 100)
-    return round((b * gamma) / (a - gamma), 1)
 
 
 def calc_room_dewpoint(

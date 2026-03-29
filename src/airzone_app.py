@@ -2890,7 +2890,7 @@ class MainWindow(QMainWindow):
             dp_spread_s = "—"
             if temp is not None and humidity is not None:
                 try:
-                    from airzone_control_brain import calc_dewpoint
+                    from airzone_utils import calc_dewpoint
                     dp = calc_dewpoint(temp, humidity)
                     dp_spread_val = round(temp - dp, 1)
                     dp_spread_s = f"{dp_spread_val} °C"

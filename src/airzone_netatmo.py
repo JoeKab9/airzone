@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 import webbrowser
@@ -132,6 +133,7 @@ def _save_tokens(tokens: dict):
     # Fallback: write to disk
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_FILE.write_text(json.dumps(tokens, indent=2))
+    os.chmod(str(TOKEN_FILE), 0o600)
 
 
 def _refresh_access_token(client_id: str, client_secret: str,

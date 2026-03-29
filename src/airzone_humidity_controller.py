@@ -228,6 +228,7 @@ class AirzoneCloudAPI:
                 "refreshToken": refresh,
                 "expiry": self.token_expiry.isoformat(),
             }))
+            os.chmod(str(TOKEN_PATH), 0o600)
 
     def load_cached_tokens(self) -> bool:
         """Try to reuse a previously saved token. Returns True if valid."""
